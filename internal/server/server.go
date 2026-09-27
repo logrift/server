@@ -8,6 +8,7 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"logrift.dev/server/internal/config"
 	"logrift.dev/server/internal/entry"
 	"logrift.dev/server/internal/index"
 	"logrift.dev/server/internal/manager"
@@ -29,33 +31,31 @@ const allProjects = "all"
 
 // Options configures the HTTP server.
 type Options struct {
-	AdminKey     string
-	MaxBodyBytes int64
-	MaxResults   int
+	AdminKey string
+	// Settings holds the runtime configuration; defaults are used when nil.
+	Settings *config.Store
 }
 
 // Server authenticates ingests per project and serves the admin UI/API.
 type Server struct {
 	manager  *manager.Manager
 	adminKey string
-	maxBody  int64
-	maxHits  int
+	settings *config.Store
 	log      *slog.Logger
 }
 
 // New returns a Server backed by m.
 func New(m *manager.Manager, opts Options, logger *slog.Logger) *Server {
-	if opts.MaxBodyBytes <= 0 {
-		opts.MaxBodyBytes = 5 * 1024 * 1024
-	}
-	if opts.MaxResults <= 0 {
-		opts.MaxResults = 1000
+	if opts.Settings == nil {
+		opts.Settings = config.NewStore(config.Defaults())
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{manager: m, adminKey: opts.AdminKey, maxBody: opts.MaxBodyBytes, maxHits: opts.MaxResults, log: logger}
+	return &Server{manager: m, adminKey: opts.AdminKey, settings: opts.Settings, log: logger}
 }
+
+func (s *Server) cfg() config.Config { return s.settings.Get() }
 
 // Handler builds the HTTP routes.
 func (s *Server) Handler() http.Handler {
@@ -63,13 +63,88 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/logs", s.handleIngest)
 	mux.HandleFunc("GET /api/search", s.handleSearch)
 	mux.HandleFunc("GET /api/stats", s.handleStats)
+	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
+	mux.HandleFunc("PATCH /api/settings", s.handleUpdateSettings)
 	mux.HandleFunc("GET /api/projects", s.handleProjects)
 	mux.HandleFunc("POST /api/projects", s.handleCreateProject)
+	mux.HandleFunc("PATCH /api/projects/{name}", s.handleUpdateProject)
 	mux.HandleFunc("POST /api/projects/{name}/rotate", s.handleRotateProject)
 	mux.HandleFunc("DELETE /api/projects/{name}", s.handleDeleteProject)
+	mux.HandleFunc("GET /api/projects/{name}/days", s.handleProjectDays)
+	mux.HandleFunc("GET /api/projects/{name}/archive", s.handleArchive)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /{$}", s.handleIndex)
 	return mux
+}
+
+// restartRequired lists the settings that only take effect after a restart.
+var restartRequired = []string{"addr", "data_dir", "reindex"}
+
+func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"settings":         s.cfg(),
+		"restart_required": restartRequired,
+		"config_path":      s.settings.Path(),
+	})
+}
+
+func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64*1024))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unable to read body"})
+		return
+	}
+	var payload struct {
+		Addr                *string `json:"addr"`
+		DataDir             *string `json:"data_dir"`
+		Reindex             *bool   `json:"reindex"`
+		CompressAfterDays   *int    `json:"compress_after_days"`
+		CompressIntervalMin *int    `json:"compress_interval_min"`
+		MaxBodyKB           *int    `json:"max_body_kb"`
+		MaxResults          *int    `json:"max_results"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	updated, err := s.settings.Update(func(c *config.Config) {
+		if payload.Addr != nil {
+			c.Addr = strings.TrimSpace(*payload.Addr)
+		}
+		if payload.DataDir != nil {
+			c.DataDir = strings.TrimSpace(*payload.DataDir)
+		}
+		if payload.Reindex != nil {
+			c.Reindex = *payload.Reindex
+		}
+		if payload.CompressAfterDays != nil {
+			c.CompressAfterDays = *payload.CompressAfterDays
+		}
+		if payload.CompressIntervalMin != nil {
+			c.CompressIntervalMin = *payload.CompressIntervalMin
+		}
+		if payload.MaxBodyKB != nil {
+			c.MaxBodyKB = *payload.MaxBodyKB
+		}
+		if payload.MaxResults != nil {
+			c.MaxResults = *payload.MaxResults
+		}
+	})
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"settings":         updated,
+		"restart_required": restartRequired,
+		"config_path":      s.settings.Path(),
+	})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -82,7 +157,7 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid project API key"})
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.maxBody))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.cfg().MaxBodyBytes()))
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
@@ -188,7 +263,7 @@ func (s *Server) searchQuery(r *http.Request) (index.Query, string, error) {
 	if err != nil {
 		return index.Query{}, name, errors.New("invalid until: " + err.Error())
 	}
-	limit := clamp(parseInt(params.Get("limit"), 100), 1, s.maxHits)
+	limit := clamp(parseInt(params.Get("limit"), 100), 1, s.cfg().MaxResults)
 	offset := max(parseInt(params.Get("offset"), 0), 0)
 	return index.Query{
 		Text:    params.Get("q"),
@@ -217,7 +292,7 @@ func (s *Server) searchAll(query index.Query) ([]hit, uint64) {
 	merged := []hit{}
 	var total uint64
 	// Each index is asked for enough to fill the page after merging.
-	fetch := clamp(query.Limit+query.Offset, 1, s.maxHits)
+	fetch := clamp(query.Limit+query.Offset, 1, s.cfg().MaxResults)
 	for _, p := range s.manager.Projects() {
 		ix, ok := s.manager.Index(p.Name)
 		if !ok {
@@ -295,13 +370,17 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 }
 
 type projectSummary struct {
-	Name        string            `json:"name"`
-	Description string            `json:"description,omitempty"`
-	KeyPrefix   string            `json:"key_prefix"`
-	CreatedAt   time.Time         `json:"created_at"`
-	LastUsedAt  time.Time         `json:"last_used_at,omitempty"`
-	Total       uint64            `json:"total"`
-	Levels      map[string]uint64 `json:"levels"`
+	Name              string            `json:"name"`
+	Description       string            `json:"description,omitempty"`
+	KeyPrefix         string            `json:"key_prefix"`
+	CompressAfterDays int               `json:"compress_after_days"`
+	LogsBytes         int64             `json:"logs_bytes"`
+	IndexBytes        int64             `json:"index_bytes"`
+	TotalBytes        int64             `json:"total_bytes"`
+	CreatedAt         time.Time         `json:"created_at"`
+	LastUsedAt        time.Time         `json:"last_used_at,omitempty"`
+	Total             uint64            `json:"total"`
+	Levels            map[string]uint64 `json:"levels"`
 }
 
 func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
@@ -316,19 +395,32 @@ func (s *Server) summaries() []projectSummary {
 	out := make([]projectSummary, 0, len(projects))
 	for _, p := range projects {
 		summary := projectSummary{
-			Name:        p.Name,
-			Description: p.Description,
-			KeyPrefix:   p.KeyPrefix,
-			CreatedAt:   p.CreatedAt,
-			LastUsedAt:  p.LastUsedAt,
-			Levels:      map[string]uint64{},
+			Name:              p.Name,
+			Description:       p.Description,
+			KeyPrefix:         p.KeyPrefix,
+			CompressAfterDays: p.CompressAfterDays,
+			CreatedAt:         p.CreatedAt,
+			LastUsedAt:        p.LastUsedAt,
+			Levels:            map[string]uint64{},
 		}
 		if ix, ok := s.manager.Index(p.Name); ok {
 			summary.Total, summary.Levels = counts(ix)
 		}
+		if usage, err := s.manager.Usage(p.Name); err == nil {
+			summary.LogsBytes, summary.IndexBytes, summary.TotalBytes = usage.LogsBytes, usage.IndexBytes, usage.TotalBytes
+		}
 		out = append(out, summary)
 	}
 	return out
+}
+
+func (s *Server) summary(name string) (projectSummary, bool) {
+	for _, sum := range s.summaries() {
+		if sum.Name == name {
+			return sum, true
+		}
+	}
+	return projectSummary{}, false
 }
 
 func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
@@ -341,15 +433,20 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var payload struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
+		Name              string `json:"name"`
+		Description       string `json:"description"`
+		CompressAfterDays *int   `json:"compress_after_days"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
 		return
 	}
-	p, key, err := s.manager.Create(strings.TrimSpace(payload.Name), strings.TrimSpace(payload.Description))
-	if errors.Is(err, project.ErrInvalidName) {
+	compressAfterDays := s.cfg().CompressAfterDays
+	if payload.CompressAfterDays != nil {
+		compressAfterDays = *payload.CompressAfterDays
+	}
+	p, key, err := s.manager.Create(strings.TrimSpace(payload.Name), strings.TrimSpace(payload.Description), compressAfterDays)
+	if errors.Is(err, project.ErrInvalidName) || errors.Is(err, project.ErrInvalidDays) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -363,6 +460,161 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"project": p, "key": key})
+}
+
+func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	name := r.PathValue("name")
+	if _, ok := s.manager.Get(name); !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64*1024))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unable to read body"})
+		return
+	}
+	var payload struct {
+		CompressAfterDays *int `json:"compress_after_days"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if payload.CompressAfterDays == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "compress_after_days is required"})
+		return
+	}
+	if _, err := s.manager.SetCompressAfterDays(name, *payload.CompressAfterDays); errors.Is(err, project.ErrInvalidDays) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	} else if err != nil {
+		s.log.Error("update project failed", "project", name, "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unable to update project"})
+		return
+	}
+	if sum, ok := s.summary(name); ok {
+		writeJSON(w, http.StatusOK, map[string]any{"project": sum})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"updated": true, "project": name})
+}
+
+func (s *Server) handleProjectDays(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	name := r.PathValue("name")
+	if _, ok := s.manager.Get(name); !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
+		return
+	}
+	days, err := s.manager.Days(name)
+	if err != nil {
+		s.log.Error("list days failed", "project", name, "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unable to list stored days"})
+		return
+	}
+	type day struct {
+		Date       string `json:"date"`
+		Name       string `json:"name"`
+		Bytes      int64  `json:"bytes"`
+		Compressed bool   `json:"compressed"`
+	}
+	out := make([]day, 0, len(days))
+	for _, d := range days {
+		out = append(out, day{
+			Date:       d.Date.Format("2006-01-02"),
+			Name:       d.Name,
+			Bytes:      d.Bytes,
+			Compressed: d.Compressed,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"project": name, "days": out})
+}
+
+// handleArchive serves stored log lines for a date range. Without raw=1 it
+// returns a JSON page of parsed entries for the viewer; with raw=1 it streams
+// the plain JSONL as a download.
+func (s *Server) handleArchive(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	name := r.PathValue("name")
+	if _, ok := s.manager.Get(name); !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
+		return
+	}
+	params := r.URL.Query()
+	from, err := parseDayParam(params.Get("from"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid from: " + err.Error()})
+		return
+	}
+	to, err := parseDayParam(params.Get("to"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid to: " + err.Error()})
+		return
+	}
+	now := time.Now().UTC()
+	if from == nil {
+		t := now.AddDate(0, 0, -7)
+		from = &t
+	}
+	if to == nil {
+		to = &now
+	}
+	if to.Before(*from) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "to must not be before from"})
+		return
+	}
+
+	if params.Get("raw") == "1" {
+		w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
+		w.Header().Set("Content-Disposition",
+			fmt.Sprintf("attachment; filename=%q", name+"-"+from.Format("20060102")+"-"+to.Format("20060102")+".jsonl"))
+		_, err := s.manager.ReadRange(name, *from, *to, 0, -1, func(raw []byte) error {
+			if _, werr := w.Write(raw); werr != nil {
+				return werr
+			}
+			_, werr := w.Write([]byte("\n"))
+			return werr
+		})
+		if err != nil {
+			s.log.Error("archive download failed", "project", name, "error", err)
+		}
+		return
+	}
+
+	skip := max(parseInt(params.Get("offset"), 0), 0)
+	limit := clamp(parseInt(params.Get("limit"), 100), 1, s.cfg().MaxResults)
+	entries := make([]hit, 0, limit)
+	more, err := s.manager.ReadRange(name, *from, *to, skip, limit, func(raw []byte) error {
+		e, perr := entry.Parse(raw)
+		if perr != nil {
+			return nil
+		}
+		line := string(raw)
+		entries = append(entries, hit{Project: name, Entry: e, Raw: line})
+		return nil
+	})
+	if err != nil {
+		s.log.Error("archive read failed", "project", name, "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unable to read archive"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project": name,
+		"from":    from.Format("2006-01-02"),
+		"to":      to.Format("2006-01-02"),
+		"count":   len(entries),
+		"offset":  skip,
+		"limit":   limit,
+		"more":    more,
+		"entries": entries,
+	})
 }
 
 func (s *Server) handleRotateProject(w http.ResponseWriter, r *http.Request) {
@@ -486,6 +738,21 @@ func decodeEntries(body []byte) ([]entry.Entry, error) {
 		entries = append(entries, e)
 	}
 	return entries, nil
+}
+
+// parseDayParam parses a YYYY-MM-DD date into the start of that UTC day. An
+// empty value yields nil.
+func parseDayParam(value string) (*time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	t, err := time.Parse("2006-01-02", value)
+	if err != nil {
+		return nil, errors.New("expected a date like 2026-09-01")
+	}
+	t = t.UTC()
+	return &t, nil
 }
 
 func parseTimeParam(value string) (*time.Time, error) {

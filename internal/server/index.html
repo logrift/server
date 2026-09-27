@@ -58,6 +58,22 @@
     .project-item .name { font-weight: 600; min-width: 120px; }
     .project-item .meta { color: var(--muted); font: 11px/1.6 var(--mono); }
     .project-item .spacer { margin-left: auto; }
+    .compress-field { display: inline-flex; gap: 5px; align-items: center; color: var(--muted); font-size: 12px; }
+    .compress-field input { width: 58px; padding: 3px 6px; font: 11px/1.4 var(--mono); }
+    .settings-grid { display: grid; grid-template-columns: max-content 1fr; gap: 10px 14px; align-items: center; max-width: 620px; margin-bottom: 14px; }
+    .settings-grid label { color: var(--muted); font-size: 13px; }
+    .settings-field { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .settings-field input[type="text"], .settings-field input[type="number"] { width: 160px; }
+    .restart-note { font: 10px/1 var(--mono); text-transform: uppercase; letter-spacing: .5px; color: var(--warn); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; }
+    .day-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 14px; }
+    .day-chip { display: inline-flex; gap: 7px; align-items: center; border: 1px solid var(--border); background: var(--panel-2); border-radius: 5px; padding: 4px 9px; font: 11px/1.4 var(--mono); color: var(--muted); cursor: pointer; }
+    .day-chip:hover { border-color: var(--accent); color: var(--text); }
+    .day-chip.active { border-color: var(--accent); color: var(--text); background: rgba(90,169,255,.1); }
+    .day-chip .gz { color: var(--accent); }
+    #archiveTable th { position: static; }
+    #archiveTable th.time, #archiveTable td.time { width: 178px; }
+    #archiveTable th.level, #archiveTable td.level { width: 72px; }
+    #archiveTable th.service, #archiveTable td.service { width: 120px; }
     .keybox { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--accent); border-radius: 6px; background: rgba(90,169,255,.08); }
     .keybox code { font-family: var(--mono); word-break: break-all; }
     .hint { color: var(--muted); font-size: 12px; }
@@ -87,6 +103,7 @@
       <h1><span>log</span>rift</h1>
       <select id="projectSelect" title="Project"></select>
       <button id="manageBtn" class="secondary small">Manage projects</button>
+      <button id="settingsBtn" class="secondary small">Settings</button>
       <button id="logoutBtn" class="secondary small">Lock</button>
       <div class="stats" id="stats"></div>
     </header>
@@ -128,6 +145,86 @@
       </div>
     </div>
 
+    <div class="panel" id="settingsPanel" hidden>
+      <h2>Settings</h2>
+      <div class="hint" id="settingsHint"></div>
+      <div class="settings-grid" style="margin-top: 12px">
+        <label for="setCompressDays">Compress logs after (new projects)</label>
+        <div class="settings-field">
+          <input id="setCompressDays" type="number" min="0" step="1" />
+          <span class="hint">days · 0 = never compress</span>
+        </div>
+
+        <label for="setCompressInterval">Compression pass every</label>
+        <div class="settings-field">
+          <input id="setCompressInterval" type="number" min="0" step="1" />
+          <span class="hint">minutes · 0 = disabled</span>
+        </div>
+
+        <label for="setMaxBody">Max ingest request size</label>
+        <div class="settings-field">
+          <input id="setMaxBody" type="number" min="1" step="1" />
+          <span class="hint">KiB</span>
+        </div>
+
+        <label for="setMaxResults">Max search page size</label>
+        <div class="settings-field">
+          <input id="setMaxResults" type="number" min="1" step="1" />
+          <span class="hint">entries</span>
+        </div>
+
+        <label for="setAddr">Listen address</label>
+        <div class="settings-field">
+          <input id="setAddr" type="text" />
+          <span class="restart-note">restart</span>
+        </div>
+
+        <label for="setDataDir">Data directory</label>
+        <div class="settings-field">
+          <input id="setDataDir" type="text" />
+          <span class="restart-note">restart</span>
+        </div>
+
+        <label for="setReindex">Rebuild index at startup</label>
+        <div class="settings-field">
+          <label class="toggle"><input id="setReindex" type="checkbox" /> enabled</label>
+          <span class="restart-note">restart</span>
+        </div>
+      </div>
+      <div class="panel-row">
+        <button id="settingsSave">Save settings</button>
+        <span class="hint" id="settingsStatus"></span>
+      </div>
+
+      <h2 style="margin-top: 20px">Log compression per project</h2>
+      <div class="hint" style="margin-bottom: 10px">
+        Logs older than N days are gzip-compressed and removed from the search index; the files are
+        kept and stay viewable under “Browse stored logs”. 0 disables compression for a project.
+      </div>
+      <div class="project-list" id="settingsProjectList"></div>
+    </div>
+
+    <div class="panel" id="archivePanel" hidden>
+      <h2>Stored logs — <span id="archiveProjectName"></span></h2>
+      <div class="hint" id="archiveHint"></div>
+      <div class="day-list" id="archiveDays"></div>
+      <div class="panel-row">
+        <input id="archiveFrom" type="date" title="From date" />
+        <input id="archiveTo" type="date" title="To date" />
+        <button id="archiveLoad">View</button>
+        <button id="archiveDownload" class="secondary">Download JSONL</button>
+        <button id="archiveClose" class="secondary">Close</button>
+        <span class="hint" id="archiveStatus"></span>
+      </div>
+      <table id="archiveTable" style="margin-top: 12px">
+        <thead><tr><th class="time">Time</th><th class="level">Level</th><th class="service">Service</th><th>Message</th></tr></thead>
+        <tbody id="archiveRows"></tbody>
+      </table>
+      <div class="panel-row" style="margin-top: 10px">
+        <button id="archiveMore" class="secondary" hidden>Load more</button>
+      </div>
+    </div>
+
     <main>
       <table>
         <thead><tr><th class="time">Time</th><th class="project">Project</th><th class="level">Level</th><th class="service">Service</th><th>Message</th></tr></thead>
@@ -143,10 +240,11 @@
 
   <script>
     const $ = id => document.getElementById(id);
-    const state = { adminKey: localStorage.getItem("logrift_admin_key") || "", project: "all", offset: 0, total: 0, projects: [] };
+    const state = { adminKey: localStorage.getItem("logrift_admin_key") || "", project: "all", offset: 0, total: 0, projects: [], archiveProject: "", archiveEntries: [], archiveHasMore: false };
 
     function esc(v) { return String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
     function fmtTime(iso) { const d = new Date(iso); if (isNaN(d)) return iso; const p = n => String(n).padStart(2, "0"); return `${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3,"0")}`; }
+    function fmtBytes(n) { n = Number(n) || 0; if (n < 1024) return n + " B"; const units = ["KB", "MB", "GB", "TB"]; let u = -1; do { n /= 1024; u++; } while (n >= 1024 && u < units.length - 1); return (n >= 100 ? n.toFixed(0) : n.toFixed(1)) + " " + units[u]; }
     function authHeaders() { return { Authorization: "Bearer " + state.adminKey }; }
 
     async function api(path, opts = {}) {
@@ -224,13 +322,14 @@
 
     function aggregateStats() {
       const levels = { trace: 0, debug: 0, info: 0, warn: 0, error: 0, fatal: 0 };
-      let total = 0;
+      let total = 0, storage = 0;
       const selected = state.project === "all" ? state.projects : state.projects.filter(p => p.name === state.project);
       for (const p of selected) {
         total += p.total || 0;
+        storage += p.total_bytes || 0;
         for (const k of Object.keys(levels)) levels[k] += (p.levels && p.levels[k]) || 0;
       }
-      const parts = [`<div class="stat">total <b>${total}</b></div>`];
+      const parts = [`<div class="stat">total <b>${total}</b></div>`, `<div class="stat">storage <b>${esc(fmtBytes(storage))}</b></div>`];
       for (const [level, count] of Object.entries(levels)) {
         const cls = level === "error" || level === "fatal" ? " error" : level === "warn" ? " warn" : "";
         parts.push(`<div class="stat${cls}">${level} <b>${count}</b></div>`);
@@ -261,16 +360,88 @@
       list.innerHTML = state.projects.map(p =>
         `<div class="project-item" data-name="${esc(p.name)}">` +
         `<span class="name">${esc(p.name)}</span>` +
-        `<span class="meta">key ${esc(p.key_prefix)}… · ${p.total} entries · used ${p.last_used_at ? esc(fmtTime(p.last_used_at)) : "never"}</span>` +
+        `<span class="meta">key ${esc(p.key_prefix)}… · ${p.total} entries · ${esc(fmtBytes(p.logs_bytes))} logs + ${esc(fmtBytes(p.index_bytes))} index · used ${p.last_used_at ? esc(fmtTime(p.last_used_at)) : "never"}</span>` +
         `<span class="spacer"></span>` +
+        `<button class="secondary small" data-action="archive">Browse stored logs</button>` +
         `<button class="secondary small" data-action="rotate">Rotate key</button>` +
         `<button class="danger small" data-action="delete">Delete</button>` +
         `</div>`).join("");
       list.querySelectorAll("button[data-action]").forEach(btn => btn.addEventListener("click", () => {
-        const name = btn.closest(".project-item").dataset.name;
+        const item = btn.closest(".project-item");
+        const name = item.dataset.name;
         if (btn.dataset.action === "rotate") rotateProject(name);
-        else deleteProject(name);
+        else if (btn.dataset.action === "delete") deleteProject(name);
+        else if (btn.dataset.action === "archive") openArchive(name);
       }));
+    }
+
+    function renderSettingsProjects() {
+      const list = $("settingsProjectList");
+      if (!state.projects.length) { list.innerHTML = '<div class="hint">No projects yet. Create one under “Manage projects”.</div>'; return; }
+      list.innerHTML = state.projects.map(p =>
+        `<div class="project-item" data-name="${esc(p.name)}">` +
+        `<span class="name">${esc(p.name)}</span>` +
+        `<span class="meta">${p.total} entries · ${esc(fmtBytes(p.total_bytes))} on disk</span>` +
+        `<span class="spacer"></span>` +
+        `<span class="compress-field">compress after <input type="number" min="0" step="1" value="${p.compress_after_days}" data-role="compress-days" title="Days after which logs are compressed and removed from the index (0 = never)" /> days</span>` +
+        `<button class="secondary small" data-action="save-compress">Save</button>` +
+        `</div>`).join("");
+      list.querySelectorAll('button[data-action="save-compress"]').forEach(btn => btn.addEventListener("click", () => {
+        const item = btn.closest(".project-item");
+        saveCompress(item.dataset.name, item.querySelector('input[data-role="compress-days"]'));
+      }));
+    }
+
+    async function saveCompress(name, input) {
+      const days = Number(input.value);
+      if (!Number.isInteger(days) || days < 0) { alert("Compression age must be zero or a positive number of days"); return; }
+      const res = await api(`/api/projects/${encodeURIComponent(name)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ compress_after_days: days }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert(data.error || "Unable to save setting"); return; }
+      $("settingsStatus").textContent = `Saved compression setting for ${name}`;
+      await refreshProjects();
+      renderSettingsProjects();
+      if (state.archiveProject === name) setArchiveHint();
+    }
+
+    async function loadSettings() {
+      try {
+        const res = await api("/api/settings");
+        if (!res.ok) return;
+        const data = await res.json();
+        const s = data.settings || {};
+        $("setCompressDays").value = s.compress_after_days ?? 0;
+        $("setCompressInterval").value = s.compress_interval_min ?? 0;
+        $("setMaxBody").value = s.max_body_kb ?? 5120;
+        $("setMaxResults").value = s.max_results ?? 1000;
+        $("setAddr").value = s.addr ?? "";
+        $("setDataDir").value = s.data_dir ?? "";
+        $("setReindex").checked = !!s.reindex;
+        $("settingsHint").textContent = `Saved to ${data.config_path || "logrift.json"}. Fields marked “restart” take effect after restarting the server.`;
+        $("settingsStatus").textContent = "";
+      } catch (err) {
+        $("settingsStatus").textContent = "Error: " + err.message;
+      }
+    }
+
+    async function saveSettings() {
+      const payload = {
+        compress_after_days: Number($("setCompressDays").value),
+        compress_interval_min: Number($("setCompressInterval").value),
+        max_body_kb: Number($("setMaxBody").value),
+        max_results: Number($("setMaxResults").value),
+        addr: $("setAddr").value.trim(),
+        data_dir: $("setDataDir").value.trim(),
+        reindex: $("setReindex").checked,
+      };
+      try {
+        const res = await api("/api/settings", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || ("server returned " + res.status));
+        $("settingsStatus").textContent = "Settings saved";
+      } catch (err) {
+        $("settingsStatus").textContent = "Error: " + err.message;
+      }
     }
 
     function showKey(key) {
@@ -307,7 +478,122 @@
       load();
     }
 
+    function setArchiveHint() {
+      const p = state.projects.find(x => x.name === state.archiveProject);
+      const n = p ? p.compress_after_days : 0;
+      $("archiveHint").textContent = n > 0
+        ? `Every stored day is listed below. Days older than ${n} days are gzip-compressed and removed from the search index, but stay viewable and downloadable here.`
+        : "Every stored day is listed below. Compression is disabled for this project, so all of its logs stay searchable.";
+    }
+
+    async function openArchive(name) {
+      state.archiveProject = name;
+      state.archiveEntries = [];
+      state.archiveHasMore = false;
+      $("archiveProjectName").textContent = name;
+      setArchiveHint();
+      $("archivePanel").hidden = false;
+      $("projectsPanel").hidden = true;
+      const to = new Date();
+      const from = new Date(to.getTime() - 7 * 86400000);
+      $("archiveFrom").value = from.toISOString().slice(0, 10);
+      $("archiveTo").value = to.toISOString().slice(0, 10);
+      await loadArchiveDays();
+      await loadArchive(true);
+    }
+
+    async function loadArchiveDays() {
+      $("archiveDays").innerHTML = "";
+      try {
+        const res = await api(`/api/projects/${encodeURIComponent(state.archiveProject)}/days`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const days = data.days || [];
+        $("archiveDays").innerHTML = days.map(d =>
+          `<span class="day-chip" data-date="${esc(d.date)}" title="${esc(d.name)}">${esc(d.date)} · ${esc(fmtBytes(d.bytes))}${d.compressed ? ' <span class="gz">gz</span>' : ""}</span>`
+        ).join("") || '<div class="hint">No stored days yet.</div>';
+        $("archiveDays").querySelectorAll(".day-chip").forEach(chip => chip.addEventListener("click", () => {
+          $("archiveFrom").value = chip.dataset.date;
+          $("archiveTo").value = chip.dataset.date;
+          loadArchive(true);
+        }));
+      } catch { /* best effort */ }
+    }
+
+    async function loadArchive(reset) {
+      const from = $("archiveFrom").value, to = $("archiveTo").value;
+      if (!from || !to) return;
+      const p = new URLSearchParams({ from, to, limit: "100" });
+      if (!reset) p.set("offset", String(state.archiveEntries.length));
+      $("archiveStatus").textContent = "Loading…";
+      try {
+        const res = await api(`/api/projects/${encodeURIComponent(state.archiveProject)}/archive?` + p);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || ("server returned " + res.status));
+        state.archiveEntries = reset ? (data.entries || []) : state.archiveEntries.concat(data.entries || []);
+        state.archiveHasMore = !!data.more;
+        renderArchive();
+        $("archiveStatus").textContent = `${state.archiveEntries.length} entries`;
+      } catch (err) {
+        $("archiveStatus").textContent = "Error: " + err.message;
+      }
+    }
+
+    function renderArchive() {
+      const rows = $("archiveRows");
+      if (!state.archiveEntries.length) {
+        rows.innerHTML = '<tr><td colspan="4" class="empty">No stored logs in this range.</td></tr>';
+      } else {
+        rows.innerHTML = state.archiveEntries.map((e, i) =>
+          `<tr class="entry" data-i="${i}">` +
+          `<td class="time">${esc(fmtTime(e.time))}</td>` +
+          `<td class="level"><span class="badge ${esc(e.level)}">${esc(e.level)}</span></td>` +
+          `<td class="service">${esc(e.service || "—")}</td>` +
+          `<td class="msg">${esc(e.message || "")}</td></tr>` +
+          `<tr class="detail" data-i="${i}" hidden><td colspan="4"><pre>${esc(JSON.stringify(e, null, 2))}</pre></td></tr>`
+        ).join("");
+        rows.querySelectorAll("tr.entry").forEach(row => row.addEventListener("click", () => {
+          const detail = rows.querySelector('tr.detail[data-i="' + row.dataset.i + '"]');
+          detail.hidden = !detail.hidden;
+        }));
+      }
+      $("archiveMore").hidden = !state.archiveHasMore;
+    }
+
+    async function downloadArchive() {
+      const from = $("archiveFrom").value, to = $("archiveTo").value;
+      if (!from || !to) return;
+      const p = new URLSearchParams({ from, to, raw: "1" });
+      $("archiveStatus").textContent = "Preparing download…";
+      try {
+        const res = await api(`/api/projects/${encodeURIComponent(state.archiveProject)}/archive?` + p);
+        if (!res.ok) throw new Error("server returned " + res.status);
+        const blob = await res.blob();
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `${state.archiveProject}-${from}-${to}.jsonl`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(a.href);
+        $("archiveStatus").textContent = "Downloaded " + fmtBytes(blob.size);
+      } catch (err) {
+        $("archiveStatus").textContent = "Error: " + err.message;
+      }
+    }
+
     $("manageBtn").addEventListener("click", () => { $("projectsPanel").hidden = !$("projectsPanel").hidden; });
+    $("settingsBtn").addEventListener("click", () => {
+      const opening = $("settingsPanel").hidden;
+      $("settingsPanel").hidden = !opening;
+      if (opening) { loadSettings(); renderSettingsProjects(); }
+    });
+    $("settingsSave").addEventListener("click", saveSettings);
+    $("archiveLoad").addEventListener("click", () => loadArchive(true));
+    $("archiveMore").addEventListener("click", () => loadArchive(false));
+    $("archiveDownload").addEventListener("click", downloadArchive);
+    $("archiveClose").addEventListener("click", () => { $("archivePanel").hidden = true; });
+    ["archiveFrom", "archiveTo"].forEach(id => $(id).addEventListener("keydown", e => { if (e.key === "Enter") loadArchive(true); }));
     $("createProject").addEventListener("click", createProject);
     $("copyKey").addEventListener("click", async () => { try { await navigator.clipboard.writeText($("keyValue").textContent); $("copyKey").textContent = "Copied"; setTimeout(() => $("copyKey").textContent = "Copy", 1200); } catch {} });
     $("projectSelect").addEventListener("change", () => { state.project = $("projectSelect").value; state.offset = 0; aggregateStats(); load(); });

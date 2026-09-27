@@ -7,14 +7,16 @@ project's JSONL files and search index separate and serves a searchable web UI.
 - **Projects:** each project has a name, an ingest API key, its own JSONL store
   and its own persistent index. Projects are created and rotated from the UI or
   admin API.
-- **Store:** append-only JSONL, one file per UTC day, with retention.
+- **Store:** append-only JSONL, one file per UTC day. Old day files are
+  gzip-compressed and archived (see below).
 - **Index:** [Bleve](https://github.com/blevesearch/bleve) full-text index,
   persisted on disk. The JSONL files are the source of truth; startup resumes
   from the last indexed byte offset and only reads the tail.
 - **Ingest:** `POST /api/logs` accepts a single object, a JSON array, or
   newline-delimited JSON, authenticated by the project's key.
 - **View:** an admin-protected web UI with a project selector and text, level,
-  service and time-range filters plus a live mode.
+  service and time-range filters plus a live mode, a per-project storage usage
+  overview and a viewer/download for stored (including compressed) logs.
 
 ## Run
 
@@ -22,7 +24,9 @@ project's JSONL files and search index separate and serves a searchable web UI.
 make run          # builds ./bin/server and starts it on 127.0.0.1:8787
 ```
 
-The first run generates an admin key and stores it in `./data/admin.key`, then
+Settings come from a JSON config file; `./logrift.json` is used by default and
+created with defaults on first run (`-config <path>` selects another file). The
+first run also generates an admin key and stores it in `./data/admin.key`, then
 logs it to stdout. Open <http://127.0.0.1:8787>, enter that key, and create a
 project. The project's key is shown once; use it to send logs:
 
@@ -35,19 +39,41 @@ curl -s -X POST http://127.0.0.1:8787/api/logs \
 
 ## Configuration
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `LOGRIFT_ADDR` | `127.0.0.1:8787` | HTTP listen address |
-| `LOGRIFT_DATA_DIR` | `./data` | Root for the registry, admin key and project data |
-| `LOGRIFT_ADMIN_KEY` | stored in `<data>/admin.key` | Admin key for the UI and admin API; required for reads |
-| `LOGRIFT_REINDEX` | *(empty)* | Set to `1` to rebuild every project's index at startup |
-| `LOGRIFT_RETENTION_DAYS` | `14` | Delete day files older than this (`0` keeps forever) |
-| `LOGRIFT_MAX_BODY_KB` | `5120` | Maximum ingest request size in KiB |
-| `LOGRIFT_MAX_RESULTS` | `1000` | Maximum search page size |
-| `LOGRIFT_PRUNE_INTERVAL_MIN` | `60` | How often retention runs |
+All settings live in the config file (`logrift.json`, or the file passed to
+`-config`). A missing file is written with the defaults below; absent keys keep
+their default value. Settings can also be viewed and edited at runtime from the
+**Settings** panel in the web UI (or `GET`/`PATCH /api/settings`); edits are
+saved back to the file. `addr`, `data_dir` and `reindex` only take effect after
+a restart.
 
-If `LOGRIFT_ADMIN_KEY` is not set, logrift generates one on first run and saves
-it in `<data>/admin.key` so it survives restarts.
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `addr` | `127.0.0.1:8787` | HTTP listen address |
+| `data_dir` | `./data` | Root for the registry, admin key and project data |
+| `reindex` | `false` | Rebuild every project's index at startup |
+| `compress_after_days` | `14` | Default for new projects: compress and unindex logs older than this (`0` = never) |
+| `compress_interval_min` | `60` | How often the compression pass runs (`0` disables the background pass) |
+| `max_body_kb` | `5120` | Maximum ingest request size in KiB |
+| `max_results` | `1000` | Maximum search page size |
+
+The admin key is not configured in the file: logrift generates one on first run
+and saves it in `<data>/admin.key` so it survives restarts.
+
+## Compression and archives
+
+Each project has its own `compress_after_days` setting (seeded from the config
+default at creation, editable per project in the Settings panel or via `PATCH
+/api/projects/{name}`). Once logs are older than that many days:
+
+- their day file is gzip-compressed to `logs-YYYYMMDD.jsonl.gz` and kept on
+  disk forever (nothing is deleted),
+- their entries are removed from the search index, so they no longer show up in
+  search results.
+
+Compressed days remain readable: the web UI's "Browse stored logs" view lists
+every stored day with its size and lets you view or download the raw JSONL for
+any date range, compressed or not (`GET /api/projects/{name}/archive`). Set the
+setting to `0` to keep everything searchable forever.
 
 ## Projects and API keys
 
@@ -65,10 +91,15 @@ it in `<data>/admin.key` so it survives restarts.
 | `POST /api/logs` | project key | Ingest one or many entries. |
 | `GET /api/search` | admin | Search. Params: `project`, `q`, `level`, `service`, `since`, `until`, `limit`, `offset`. |
 | `GET /api/stats` | admin | Totals per level for a project or `all`. |
-| `GET /api/projects` | admin | List projects with per-level counts. |
-| `POST /api/projects` | admin | Create a project. Body `{"name","description"}`; returns the key once. |
+| `GET /api/settings` | admin | Current settings, the config file path and which settings need a restart. |
+| `PATCH /api/settings` | admin | Update settings; persisted to the config file. |
+| `GET /api/projects` | admin | List projects with per-level counts and disk usage. |
+| `POST /api/projects` | admin | Create a project. Body `{"name","description","compress_after_days"}`; returns the key once. |
+| `PATCH /api/projects/{name}` | admin | Update settings. Body `{"compress_after_days":N}` (`0` disables). |
 | `POST /api/projects/{name}/rotate` | admin | Issue a new key. |
 | `DELETE /api/projects/{name}` | admin | Delete a project and its data. |
+| `GET /api/projects/{name}/days` | admin | List stored day files with sizes and compression state. |
+| `GET /api/projects/{name}/archive` | admin | Stored log lines for `from`/`to` dates (YYYY-MM-DD). Returns a JSON page (`limit`, `offset`); `raw=1` downloads the plain JSONL. |
 | `GET /healthz` | none | Liveness check. |
 
 `project` defaults to `all`, which merges results across projects newest first.
@@ -100,19 +131,20 @@ data/
   projects.json
   projects/
     <name>/
-      logs-YYYYMMDD.jsonl
-      index/            # persistent Bleve index
-      index.meta.json   # indexed byte offsets per day file
+      logs-YYYYMMDD.jsonl      # live day files
+      logs-YYYYMMDD.jsonl.gz   # compressed archive of aged day files
+      index/                   # persistent Bleve index
+      index.meta.json          # indexed byte offsets per day file
 ```
 
 ## Layout
 
 ```
-cmd/server/main.go        startup, admin key, prune, graceful shutdown
-internal/config           environment configuration
+cmd/server/main.go        startup, config, admin key, compression loop, shutdown
+internal/config           JSON config file
 internal/entry            canonical record + lenient JSON parser
-internal/store            JSONL append, scan, rotation, repair, retention
-internal/index            persistent Bleve index: add, search, count, prune
+internal/store            JSONL append, scan, rotation, repair, compression
+internal/index            persistent Bleve index: add, search, count, delete
 internal/collect          indexed writes + tail catch-up per project
 internal/project          project registry + hashed API keys
 internal/manager          per-project store/index/collector lifecycle
@@ -131,18 +163,18 @@ Each project's index lives in its own directory and survives restarts. Every
 stored line is indexed under a stable document ID derived from its file and byte
 offset, and the last indexed offset per day file is recorded in
 `index.meta.json`. On startup each project seeks to those offsets and indexes
-only the tail, so a clean restart is fast regardless of retained history.
+only the tail, so a clean restart is fast regardless of history size.
 
 Because document IDs are stable, indexing is idempotent: if the process crashes
 between writing a line to JSONL and indexing it, or if a meta file is lost, the
 next startup re-indexes the affected lines and overwrites them rather than
 creating duplicates. On startup a partial trailing line left by an unclean
-shutdown is truncated so the next append cannot concatenate onto it. Retention
-prunes both the JSONL files and the matching index documents.
+shutdown is truncated so the next append cannot concatenate onto it. The
+compression pass archives aged day files and removes their index documents.
 
 To force a full rebuild (for example after changing the index mapping, or if an
-index becomes corrupt), start with `LOGRIFT_REINDEX=1`; every project's index
-and meta file are removed and rebuilt from its JSONL files.
+index becomes corrupt), set `"reindex": true` in the config file; every
+project's index and meta file are removed and rebuilt from its JSONL files.
 
 ## Notes and limits
 

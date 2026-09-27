@@ -3,6 +3,7 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -105,7 +106,7 @@ func TestRepairTruncatesPartialLine(t *testing.T) {
 	}
 }
 
-func TestPruneRemovesOldDays(t *testing.T) {
+func TestCompressArchivesOldDays(t *testing.T) {
 	dir := t.TempDir()
 	st, err := Open(dir)
 	if err != nil {
@@ -121,12 +122,124 @@ func TestPruneRemovesOldDays(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := st.Prune(7 * 24 * time.Hour); err != nil {
+	cutoff := dayStart(time.Now().UTC()).AddDate(0, 0, -7)
+	compressed, err := st.Compress(cutoff)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if len(compressed) != 1 {
+		t.Fatalf("compressed = %v, want one file", compressed)
+	}
+	oldName := filePrefix + old.Format(dateLayout) + fileSuffix
+	if _, err := os.Stat(filepath.Join(dir, oldName)); !os.IsNotExist(err) {
+		t.Fatalf("uncompressed %s still exists", oldName)
+	}
+	if _, err := os.Stat(filepath.Join(dir, oldName+gzSuffix)); err != nil {
+		t.Fatalf("compressed archive missing: %v", err)
+	}
+
+	days, err := st.Days()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(days) != 2 {
+		t.Fatalf("days = %+v", days)
+	}
+	if !days[0].Compressed || days[1].Compressed {
+		t.Fatalf("days order/flags = %+v", days)
 	}
 
 	messages := replay(t, st, nil)
 	if len(messages) != 1 || messages[0] != "recent" {
-		t.Fatalf("after prune messages = %v", messages)
+		t.Fatalf("scan after compress = %v (compressed days must not be indexed)", messages)
 	}
+	lines := readRange(t, st, old, old, 0, -1)
+	if len(lines) != 1 || !strings.Contains(lines[0], "ancient") {
+		t.Fatalf("archive lines = %v", lines)
+	}
+}
+
+func TestCompressMergesIntoExistingArchive(t *testing.T) {
+	dir := t.TempDir()
+	old := time.Now().UTC().AddDate(0, 0, -30)
+	name := filePrefix + old.Format(dateLayout) + fileSuffix
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(`{"level":"info","message":"first"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	cutoff := dayStart(time.Now().UTC()).AddDate(0, 0, -7)
+	if _, err := st.Compress(cutoff); err != nil {
+		t.Fatal(err)
+	}
+	// A backdated append lands in the already-compressed day; a later entry
+	// rotates the active file away from it again.
+	if _, err := st.Append(entry.Entry{Time: old, Level: "info", Message: "backfill"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Append(entry.Entry{Time: time.Now().UTC(), Level: "info", Message: "later"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Compress(cutoff); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+		t.Fatalf("uncompressed %s still exists", name)
+	}
+
+	lines := readRange(t, st, old, old, 0, -1)
+	if len(lines) != 2 || !strings.Contains(lines[0], "first") || !strings.Contains(lines[1], "backfill") {
+		t.Fatalf("merged archive lines = %v", lines)
+	}
+}
+
+func TestReadRangeSkipsAndLimits(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	day := time.Now().UTC().AddDate(0, 0, -2)
+	for i, msg := range []string{"one", "two", "three", "four"} {
+		if _, err := st.Append(entry.Entry{Time: day.Add(time.Duration(i) * time.Minute), Level: "info", Message: msg}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	lines := readRange(t, st, day, day, 1, 2)
+	if len(lines) != 2 || !strings.Contains(lines[0], "two") || !strings.Contains(lines[1], "three") {
+		t.Fatalf("skip/limit lines = %v", lines)
+	}
+	more, err := st.ReadRange(day, day, 1, 2, func([]byte) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !more {
+		t.Fatal("more = false, want true")
+	}
+	more, err = st.ReadRange(day, day, 3, 2, func([]byte) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if more {
+		t.Fatal("more = true at end of range, want false")
+	}
+}
+
+func readRange(t *testing.T, st *Store, from, to time.Time, skip, limit int) []string {
+	t.Helper()
+	var lines []string
+	if _, err := st.ReadRange(from, to, skip, limit, func(raw []byte) error {
+		lines = append(lines, string(raw))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return lines
 }

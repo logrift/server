@@ -92,14 +92,17 @@ func (c *Collector) CatchUp() (int, error) {
 	return added, c.index.SetOffsets(end)
 }
 
-// Prune enforces retention on both the JSONL files and the index. It returns the
-// number of index documents deleted.
-func (c *Collector) Prune(retention time.Duration) (int, error) {
-	if retention <= 0 {
+// Compress archives and unindexes entries older than the window. Day files
+// dated before the cutoff are gzip-compressed and kept on disk, their index
+// documents are deleted, and their offsets are dropped. It returns the number
+// of index documents deleted.
+func (c *Collector) Compress(after time.Duration) (int, error) {
+	if after <= 0 {
 		return 0, nil
 	}
-	cutoff := time.Now().UTC().Add(-retention)
-	if err := c.store.Prune(retention); err != nil {
+	now := time.Now().UTC()
+	cutoff := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).Add(-after)
+	if _, err := c.store.Compress(cutoff); err != nil {
 		return 0, err
 	}
 	deleted, err := c.index.DeleteBefore(cutoff)

@@ -2,6 +2,7 @@ package collect
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,5 +93,52 @@ func TestStableIDsPreventDuplicatesOnRestart(t *testing.T) {
 	count, _ := ix.DocCount()
 	if count != 2 {
 		t.Fatalf("documents = %d, want 2 (no duplicates)", count)
+	}
+}
+
+func TestCompressArchivesAndUnindexes(t *testing.T) {
+	st, ix, c := fixture(t)
+	old := time.Now().UTC().AddDate(0, 0, -30)
+	for _, e := range []entry.Entry{
+		{Time: old, Level: "error", Message: "ancient"},
+		{Time: time.Now().UTC(), Level: "info", Message: "recent"},
+	} {
+		if err := c.Write([]entry.Entry{e}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	deleted, err := c.Compress(7 * 24 * time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted = %d, want 1", deleted)
+	}
+	count, _ := ix.DocCount()
+	if count != 1 {
+		t.Fatalf("documents = %d, want 1", count)
+	}
+	res, err := ix.Search(index.Query{Text: "ancient", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Total != 0 {
+		t.Fatalf("archived entry still searchable, total = %d", res.Total)
+	}
+
+	files, err := st.Files()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range files {
+		if strings.Contains(name, old.Format("20060102")) {
+			t.Fatalf("uncompressed day file kept: %v", files)
+		}
+	}
+	for name := range ix.Offsets() {
+		if strings.Contains(name, old.Format("20060102")) {
+			t.Fatalf("offset for compressed file kept: %v", ix.Offsets())
+		}
 	}
 }

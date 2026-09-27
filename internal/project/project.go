@@ -31,17 +31,20 @@ var (
 	ErrExists = errors.New("project already exists")
 	// ErrInvalidName is returned for names that are not URL-safe slugs.
 	ErrInvalidName = errors.New("project name must match [a-z0-9][a-z0-9_-]{0,63}")
+	// ErrInvalidDays is returned for a negative compression age.
+	ErrInvalidDays = errors.New("compress_after_days must not be negative")
 	nameRE         = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 )
 
 // Project is a named log stream with one ingest API key.
 type Project struct {
-	Name        string    `json:"name"`
-	Description string    `json:"description,omitempty"`
-	KeyHash     string    `json:"key_hash"`
-	KeyPrefix   string    `json:"key_prefix"`
-	CreatedAt   time.Time `json:"created_at"`
-	LastUsedAt  time.Time `json:"last_used_at,omitempty"`
+	Name              string    `json:"name"`
+	Description       string    `json:"description,omitempty"`
+	KeyHash           string    `json:"key_hash"`
+	KeyPrefix         string    `json:"key_prefix"`
+	CompressAfterDays int       `json:"compress_after_days"`
+	CreatedAt         time.Time `json:"created_at"`
+	LastUsedAt        time.Time `json:"last_used_at,omitempty"`
 }
 
 type registryFile struct {
@@ -112,11 +115,14 @@ func (r *Registry) Get(name string) (Project, bool) {
 
 // Create adds a project and returns its key in plain text. The plain text key is
 // not stored and cannot be retrieved again.
-func (r *Registry) Create(name, description string) (Project, string, error) {
+func (r *Registry) Create(name, description string, compressAfterDays int) (Project, string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !nameRE.MatchString(name) {
 		return Project{}, "", ErrInvalidName
+	}
+	if compressAfterDays < 0 {
+		return Project{}, "", ErrInvalidDays
 	}
 	if _, ok := r.projects[name]; ok {
 		return Project{}, "", ErrExists
@@ -126,11 +132,12 @@ func (r *Registry) Create(name, description string) (Project, string, error) {
 		return Project{}, "", err
 	}
 	p := &Project{
-		Name:        name,
-		Description: description,
-		KeyHash:     hashKey(key),
-		KeyPrefix:   displayPrefix(key),
-		CreatedAt:   time.Now().UTC(),
+		Name:              name,
+		Description:       description,
+		KeyHash:           hashKey(key),
+		KeyPrefix:         displayPrefix(key),
+		CompressAfterDays: compressAfterDays,
+		CreatedAt:         time.Now().UTC(),
 	}
 	r.projects[name] = p
 	r.byHash[p.KeyHash] = name
@@ -140,6 +147,25 @@ func (r *Registry) Create(name, description string) (Project, string, error) {
 		return Project{}, "", err
 	}
 	return *p, key, nil
+}
+
+// UpdateCompressAfterDays changes when a project's logs are compressed and
+// dropped from the search index. Zero disables compression.
+func (r *Registry) UpdateCompressAfterDays(name string, days int) (Project, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.projects[name]
+	if !ok {
+		return Project{}, ErrNotFound
+	}
+	if days < 0 {
+		return Project{}, ErrInvalidDays
+	}
+	p.CompressAfterDays = days
+	if err := r.saveLocked(); err != nil {
+		return Project{}, err
+	}
+	return *p, nil
 }
 
 // Rotate replaces a project's key and returns the new key in plain text.

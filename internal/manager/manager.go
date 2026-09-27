@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -56,8 +57,8 @@ func Open(root string, reindex bool) (*Manager, error) {
 }
 
 // Create registers a project and returns its plain-text key.
-func (m *Manager) Create(name, description string) (project.Project, string, error) {
-	p, key, err := m.registry.Create(name, description)
+func (m *Manager) Create(name, description string, compressAfterDays int) (project.Project, string, error) {
+	p, key, err := m.registry.Create(name, description, compressAfterDays)
 	if err != nil {
 		return project.Project{}, "", err
 	}
@@ -66,6 +67,12 @@ func (m *Manager) Create(name, description string) (project.Project, string, err
 		return project.Project{}, "", err
 	}
 	return p, key, nil
+}
+
+// SetCompressAfterDays updates when a project's logs are compressed and dropped
+// from the search index. Zero disables compression.
+func (m *Manager) SetCompressAfterDays(name string, days int) (project.Project, error) {
+	return m.registry.UpdateCompressAfterDays(name, days)
 }
 
 // Rotate issues a new key for a project.
@@ -145,19 +152,83 @@ func (m *Manager) CatchUp() (int, error) {
 	return total, nil
 }
 
-// Prune enforces retention on every project and returns documents deleted.
-func (m *Manager) Prune(retention time.Duration) (int, error) {
+// Compress archives and unindexes aged logs for every project with a
+// compress-after setting. It returns the number of index documents deleted.
+func (m *Manager) Compress() (int, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	total := 0
 	for name, rt := range m.runtimes {
-		deleted, err := rt.collector.Prune(retention)
+		p, ok := m.registry.Get(name)
+		if !ok || p.CompressAfterDays <= 0 {
+			continue
+		}
+		deleted, err := rt.collector.Compress(time.Duration(p.CompressAfterDays) * 24 * time.Hour)
 		if err != nil {
-			return total, fmt.Errorf("prune %q: %w", name, err)
+			return total, fmt.Errorf("compress %q: %w", name, err)
 		}
 		total += deleted
 	}
 	return total, nil
+}
+
+// Usage reports how much disk a project occupies: its JSONL day files
+// (compressed or not) and its search index.
+type Usage struct {
+	LogsBytes  int64 `json:"logs_bytes"`
+	IndexBytes int64 `json:"index_bytes"`
+	TotalBytes int64 `json:"total_bytes"`
+}
+
+// Usage returns the disk usage of a project's directory.
+func (m *Manager) Usage(name string) (Usage, error) {
+	var u Usage
+	err := filepath.WalkDir(m.projectDir(name), func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if strings.HasPrefix(d.Name(), "logs-") {
+			u.LogsBytes += info.Size()
+		} else {
+			u.IndexBytes += info.Size()
+		}
+		return nil
+	})
+	if err != nil {
+		return Usage{}, err
+	}
+	u.TotalBytes = u.LogsBytes + u.IndexBytes
+	return u, nil
+}
+
+// Days returns the day files stored for a project, oldest first.
+func (m *Manager) Days(name string) ([]store.DayFile, error) {
+	m.mu.RLock()
+	rt, ok := m.runtimes[name]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, project.ErrNotFound
+	}
+	return rt.store.Days()
+}
+
+// ReadRange streams raw stored log lines for a project's UTC days in
+// [from, to]; see store.Store.ReadRange.
+func (m *Manager) ReadRange(name string, from, to time.Time, skip, limit int, fn func([]byte) error) (bool, error) {
+	m.mu.RLock()
+	rt, ok := m.runtimes[name]
+	m.mu.RUnlock()
+	if !ok {
+		return false, project.ErrNotFound
+	}
+	return rt.store.ReadRange(from, to, skip, limit, fn)
 }
 
 // Flush persists registry metadata.

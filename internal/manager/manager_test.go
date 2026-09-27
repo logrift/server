@@ -15,7 +15,7 @@ func TestCreateWriteAndSearch(t *testing.T) {
 	}
 	defer m.Close()
 
-	_, key, err := m.Create("dbmodeller", "")
+	_, key, err := m.Create("dbmodeller", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestPersistenceAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, key, _ := m.Create("api", "")
+	_, key, _ := m.Create("api", "", 0)
 	collector, _ := m.Collector("api")
 	if err := collector.Write([]entry.Entry{{Time: time.Now().UTC(), Level: "info", Message: "persisted"}}); err != nil {
 		t.Fatal(err)
@@ -87,7 +87,7 @@ func TestPersistenceAcrossReopen(t *testing.T) {
 func TestDeleteRemovesData(t *testing.T) {
 	m, _ := Open(t.TempDir(), false)
 	defer m.Close()
-	_, key, _ := m.Create("gone", "")
+	_, key, _ := m.Create("gone", "", 0)
 	if err := m.Delete("gone"); err != nil {
 		t.Fatal(err)
 	}

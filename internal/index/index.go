@@ -54,8 +54,12 @@ type Index struct {
 	metaPath string
 
 	mu      sync.Mutex
+	closed  bool
 	offsets map[string]int64
 }
+
+// ErrClosed is returned when an index is used after Close.
+var ErrClosed = errors.New("index is closed")
 
 type meta struct {
 	Version int              `json:"version"`
@@ -116,6 +120,9 @@ func (i *Index) Batch(items []Item) error {
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	if i.closed {
+		return ErrClosed
+	}
 	batch := i.idx.NewBatch()
 	for _, item := range items {
 		if err := batch.Index(item.ID, document(item.Entry, item.Raw)); err != nil {
@@ -132,9 +139,14 @@ func (i *Index) Batch(items []Item) error {
 func (i *Index) Search(q Query) (Result, error) {
 	req := bleve.NewSearchRequestOptions(buildQuery(q), q.Limit, q.Offset, false)
 	req.SortBy([]string{"-time"})
-	req.Fields = []string{"*"}
+	// Only the stored canonical JSON is needed: hits are rebuilt from it.
+	req.Fields = []string{"raw"}
 
 	i.mu.Lock()
+	if i.closed {
+		i.mu.Unlock()
+		return Result{}, ErrClosed
+	}
 	res, err := i.idx.Search(req)
 	i.mu.Unlock()
 	if err != nil {
@@ -167,6 +179,10 @@ func (i *Index) Count(level string) (uint64, error) {
 	req := bleve.NewSearchRequestOptions(q, 0, 0, false)
 
 	i.mu.Lock()
+	if i.closed {
+		i.mu.Unlock()
+		return 0, ErrClosed
+	}
 	res, err := i.idx.Search(req)
 	i.mu.Unlock()
 	if err != nil {
@@ -187,6 +203,10 @@ func (i *Index) DeleteBefore(t time.Time) (int, error) {
 	for {
 		req := bleve.NewSearchRequestOptions(bool, 1000, 0, false)
 		i.mu.Lock()
+		if i.closed {
+			i.mu.Unlock()
+			return deleted, ErrClosed
+		}
 		res, err := i.idx.Search(req)
 		if err != nil {
 			i.mu.Unlock()
@@ -213,6 +233,9 @@ func (i *Index) DeleteBefore(t time.Time) (int, error) {
 func (i *Index) DocCount() (uint64, error) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	if i.closed {
+		return 0, ErrClosed
+	}
 	return i.idx.DocCount()
 }
 
@@ -239,8 +262,17 @@ func (i *Index) SetOffsets(offsets map[string]int64) error {
 	return i.saveMetaLocked()
 }
 
-// Close releases the index.
-func (i *Index) Close() error { return i.idx.Close() }
+// Close releases the index. It is safe to call more than once and serializes
+// with in-flight operations.
+func (i *Index) Close() error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.closed {
+		return nil
+	}
+	i.closed = true
+	return i.idx.Close()
+}
 
 func (i *Index) loadMeta() error {
 	data, err := os.ReadFile(i.metaPath)

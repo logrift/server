@@ -221,6 +221,12 @@ func TestHealth(t *testing.T) {
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("health status = %d", res.StatusCode)
 	}
+	if got := res.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if got := res.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
 }
 
 func TestSettingsEndpoints(t *testing.T) {

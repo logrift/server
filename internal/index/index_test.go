@@ -147,6 +147,25 @@ func TestPersistsAcrossReopen(t *testing.T) {
 	}
 }
 
+func TestCloseIsIdempotentAndRejectsUse(t *testing.T) {
+	ix, _ := newFixture(t)
+	if err := ix.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ix.Close(); err != nil {
+		t.Fatalf("second close = %v, want nil", err)
+	}
+	if _, err := ix.Search(Query{Text: "database", Limit: 10}); err != ErrClosed {
+		t.Fatalf("search after close = %v, want %v", err, ErrClosed)
+	}
+	if _, err := ix.Count(""); err != ErrClosed {
+		t.Fatalf("count after close = %v, want %v", err, ErrClosed)
+	}
+	if err := ix.Add(Item{ID: "x", Entry: entry.Entry{Time: time.Now().UTC(), Level: "info", Message: "x"}}); err != ErrClosed {
+		t.Fatalf("add after close = %v, want %v", err, ErrClosed)
+	}
+}
+
 func TestDeleteBefore(t *testing.T) {
 	ix, base := newFixture(t)
 	defer ix.Close()

@@ -64,6 +64,7 @@ func (m *Manager) Create(name, description string, compressAfterDays int) (proje
 	}
 	if err := m.openRuntime(name, false); err != nil {
 		_ = m.registry.Delete(name)
+		_ = os.RemoveAll(m.projectDir(name))
 		return project.Project{}, "", err
 	}
 	return p, key, nil

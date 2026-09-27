@@ -48,7 +48,14 @@ func (c *Collector) Write(entries []entry.Entry) error {
 		last[pos.File] = pos.End
 	}
 	if err := c.index.Batch(items); err != nil {
-		return err
+		// The lines are already durable in the store but the index write
+		// failed, so they would stay unsearchable until the next restart.
+		// Reconcile from the last recorded offset now: doc IDs are stable, so
+		// this cannot duplicate documents.
+		if _, cerr := c.CatchUp(); cerr != nil {
+			return err
+		}
+		return nil
 	}
 	offsets := c.index.Offsets()
 	for name, end := range last {

@@ -3,7 +3,6 @@ package config
 
 import (
 	"os"
-	"path/filepath"
 	"strconv"
 	"time"
 )
@@ -12,9 +11,8 @@ import (
 type Config struct {
 	Addr          string
 	DataDir       string
-	IndexDir      string
+	AdminKey      string
 	Reindex       bool
-	Token         string
 	Retention     time.Duration
 	MaxBodyBytes  int64
 	MaxResults    int
@@ -23,13 +21,11 @@ type Config struct {
 
 // Load reads configuration from the environment, applying defaults.
 func Load() Config {
-	dataDir := env("LOGRIFT_DATA_DIR", "./data")
 	return Config{
 		Addr:          env("LOGRIFT_ADDR", "127.0.0.1:8787"),
-		DataDir:       dataDir,
-		IndexDir:      env("LOGRIFT_INDEX_DIR", filepath.Join(dataDir, "index")),
+		DataDir:       env("LOGRIFT_DATA_DIR", "./data"),
+		AdminKey:      os.Getenv("LOGRIFT_ADMIN_KEY"),
 		Reindex:       os.Getenv("LOGRIFT_REINDEX") == "1",
-		Token:         os.Getenv("LOGRIFT_INGEST_TOKEN"),
 		Retention:     time.Duration(envInt("LOGRIFT_RETENTION_DAYS", 14)) * 24 * time.Hour,
 		MaxBodyBytes:  int64(envInt("LOGRIFT_MAX_BODY_KB", 5120)) * 1024,
 		MaxResults:    envInt("LOGRIFT_MAX_RESULTS", 1000),

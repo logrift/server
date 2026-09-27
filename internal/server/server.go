@@ -1,5 +1,6 @@
-// Package server exposes logrift's HTTP surface: a JSON ingest endpoint, a
-// search/query API, and the embedded web UI.
+// Package server exposes logrift's HTTP surface: a per-project JSON ingest
+// endpoint, an admin API for managing projects, a search/query API, and the
+// embedded web UI.
 package server
 
 import (
@@ -10,37 +11,40 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	"logrift.dev/server/internal/collect"
 	"logrift.dev/server/internal/entry"
 	"logrift.dev/server/internal/index"
+	"logrift.dev/server/internal/manager"
+	"logrift.dev/server/internal/project"
 )
 
 //go:embed index.html
 var assets embed.FS
 
+const allProjects = "all"
+
 // Options configures the HTTP server.
 type Options struct {
-	Token        string
+	AdminKey     string
 	MaxBodyBytes int64
 	MaxResults   int
 }
 
-// Server coordinates ingestion into the store and index and serves the UI.
+// Server authenticates ingests per project and serves the admin UI/API.
 type Server struct {
-	collector *collect.Collector
-	index     *index.Index
-	token     string
-	maxBody   int64
-	maxHits   int
-	log       *slog.Logger
+	manager  *manager.Manager
+	adminKey string
+	maxBody  int64
+	maxHits  int
+	log      *slog.Logger
 }
 
-// New returns a Server writing through collector and searching index.
-func New(collector *collect.Collector, ix *index.Index, opts Options, logger *slog.Logger) *Server {
+// New returns a Server backed by m.
+func New(m *manager.Manager, opts Options, logger *slog.Logger) *Server {
 	if opts.MaxBodyBytes <= 0 {
 		opts.MaxBodyBytes = 5 * 1024 * 1024
 	}
@@ -50,7 +54,7 @@ func New(collector *collect.Collector, ix *index.Index, opts Options, logger *sl
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{collector: collector, index: ix, token: opts.Token, maxBody: opts.MaxBodyBytes, maxHits: opts.MaxResults, log: logger}
+	return &Server{manager: m, adminKey: opts.AdminKey, maxBody: opts.MaxBodyBytes, maxHits: opts.MaxResults, log: logger}
 }
 
 // Handler builds the HTTP routes.
@@ -59,6 +63,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/logs", s.handleIngest)
 	mux.HandleFunc("GET /api/search", s.handleSearch)
 	mux.HandleFunc("GET /api/stats", s.handleStats)
+	mux.HandleFunc("GET /api/projects", s.handleProjects)
+	mux.HandleFunc("POST /api/projects", s.handleCreateProject)
+	mux.HandleFunc("POST /api/projects/{name}/rotate", s.handleRotateProject)
+	mux.HandleFunc("DELETE /api/projects/{name}", s.handleDeleteProject)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /{$}", s.handleIndex)
 	return mux
@@ -69,8 +77,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
-	if !s.authorized(r) {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid ingest token"})
+	project, ok := s.manager.Authenticate(bearer(r))
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid project API key"})
 		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.maxBody))
@@ -94,31 +103,94 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.collector.Write(entries); err != nil {
-		s.log.Error("failed to persist log entries", "error", err)
+	collector, ok := s.manager.Collector(project.Name)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "project is not available"})
+		return
+	}
+	if err := collector.Write(entries); err != nil {
+		s.log.Error("failed to persist log entries", "project", project.Name, "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unable to persist entries"})
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]int{"accepted": len(entries)})
+	s.manager.Touch(project.Name)
+	writeJSON(w, http.StatusAccepted, map[string]any{"accepted": len(entries), "project": project.Name})
+}
+
+type hit struct {
+	Project string `json:"project"`
+	entry.Entry
+	Raw string `json:"raw"`
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	query, name, err := s.searchQuery(r)
+	if errors.Is(err, project.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	var hits []hit
+	var total uint64
+	if name == allProjects {
+		hits, total = s.searchAll(query)
+	} else {
+		hits, total, err = s.searchOne(name, query)
+		if errors.Is(err, project.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
+			return
+		}
+		if err != nil {
+			s.log.Error("search failed", "project", name, "error", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "search failed"})
+			return
+		}
+	}
+
+	if hits == nil {
+		hits = []hit{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total":   total,
+		"count":   len(hits),
+		"limit":   query.Limit,
+		"offset":  query.Offset,
+		"project": name,
+		"entries": hits,
+	})
+}
+
+// searchQuery parses the search parameters. For the "all" project it fetches
+// enough from each index to satisfy the page before merging.
+func (s *Server) searchQuery(r *http.Request) (index.Query, string, error) {
 	params := r.URL.Query()
+	name := strings.TrimSpace(params.Get("project"))
+	if name == "" {
+		name = allProjects
+	}
+	if name != allProjects {
+		if _, ok := s.manager.Get(name); !ok {
+			return index.Query{}, name, project.ErrNotFound
+		}
+	}
 	since, err := parseTimeParam(params.Get("since"))
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid since: " + err.Error()})
-		return
+		return index.Query{}, name, errors.New("invalid since: " + err.Error())
 	}
 	until, err := parseTimeParam(params.Get("until"))
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid until: " + err.Error()})
-		return
+		return index.Query{}, name, errors.New("invalid until: " + err.Error())
 	}
-
 	limit := clamp(parseInt(params.Get("limit"), 100), 1, s.maxHits)
 	offset := max(parseInt(params.Get("offset"), 0), 0)
-
-	result, err := s.index.Search(index.Query{
+	return index.Query{
 		Text:    params.Get("q"),
 		Level:   strings.TrimSpace(params.Get("level")),
 		Service: strings.TrimSpace(params.Get("service")),
@@ -126,51 +198,207 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Until:   until,
 		Limit:   limit,
 		Offset:  offset,
-	})
-	if err != nil {
-		s.log.Error("search failed", "error", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "search failed"})
-		return
-	}
-
-	type hit struct {
-		entry.Entry
-		Raw string `json:"raw"`
-	}
-	hits := make([]hit, 0, len(result.Hits))
-	for n, e := range result.Hits {
-		hits = append(hits, hit{Entry: e, Raw: result.Raw[n]})
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"total":   result.Total,
-		"count":   len(hits),
-		"limit":   limit,
-		"offset":  offset,
-		"entries": hits,
-	})
+	}, name, nil
 }
 
-func (s *Server) handleStats(w http.ResponseWriter, _ *http.Request) {
-	levels := []string{"trace", "debug", "info", "warn", "error", "fatal"}
-	counts := map[string]uint64{}
-	for _, level := range levels {
-		n, err := s.index.Count(level)
-		if err != nil {
-			s.log.Error("count failed", "error", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "count failed"})
-			return
+func (s *Server) searchOne(name string, query index.Query) ([]hit, uint64, error) {
+	ix, ok := s.manager.Index(name)
+	if !ok {
+		return nil, 0, project.ErrNotFound
+	}
+	res, err := ix.Search(query)
+	if err != nil {
+		return nil, 0, err
+	}
+	return labelHits(name, res), res.Total, nil
+}
+
+func (s *Server) searchAll(query index.Query) ([]hit, uint64) {
+	merged := []hit{}
+	var total uint64
+	// Each index is asked for enough to fill the page after merging.
+	fetch := clamp(query.Limit+query.Offset, 1, s.maxHits)
+	for _, p := range s.manager.Projects() {
+		ix, ok := s.manager.Index(p.Name)
+		if !ok {
+			continue
 		}
-		counts[level] = n
+		res, err := ix.Search(index.Query{
+			Text: query.Text, Level: query.Level, Service: query.Service,
+			Since: query.Since, Until: query.Until, Limit: fetch, Offset: 0,
+		})
+		if err != nil {
+			s.log.Warn("search skipped project", "project", p.Name, "error", err)
+			continue
+		}
+		total += res.Total
+		merged = append(merged, labelHits(p.Name, res)...)
 	}
-	total, err := s.index.Count("")
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "count failed"})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"total": total, "levels": counts})
+	sort.SliceStable(merged, func(i, j int) bool { return merged[i].Entry.Time.After(merged[j].Entry.Time) })
+	return s.page(merged, query), total
 }
 
-func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+func labelHits(name string, res index.Result) []hit {
+	hits := make([]hit, 0, len(res.Hits))
+	for i, e := range res.Hits {
+		hits = append(hits, hit{Project: name, Entry: e, Raw: res.Raw[i]})
+	}
+	return hits
+}
+
+func (s *Server) page(hits []hit, query index.Query) []hit {
+	if hits == nil {
+		return []hit{}
+	}
+	if query.Offset >= len(hits) {
+		return hits[:0]
+	}
+	hits = hits[query.Offset:]
+	if len(hits) > query.Limit {
+		hits = hits[:query.Limit]
+	}
+	return hits
+}
+
+func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	name := strings.TrimSpace(r.URL.Query().Get("project"))
+	if name == "" {
+		name = allProjects
+	}
+	if name == allProjects {
+		total := uint64(0)
+		levels := map[string]uint64{}
+		for _, p := range s.manager.Projects() {
+			ix, ok := s.manager.Index(p.Name)
+			if !ok {
+				continue
+			}
+			t, l := counts(ix)
+			total += t
+			for k, v := range l {
+				levels[k] += v
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"total": total, "levels": levels})
+		return
+	}
+	ix, ok := s.manager.Index(name)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
+		return
+	}
+	total, levels := counts(ix)
+	writeJSON(w, http.StatusOK, map[string]any{"total": total, "levels": levels})
+}
+
+type projectSummary struct {
+	Name        string            `json:"name"`
+	Description string            `json:"description,omitempty"`
+	KeyPrefix   string            `json:"key_prefix"`
+	CreatedAt   time.Time         `json:"created_at"`
+	LastUsedAt  time.Time         `json:"last_used_at,omitempty"`
+	Total       uint64            `json:"total"`
+	Levels      map[string]uint64 `json:"levels"`
+}
+
+func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"projects": s.summaries()})
+}
+
+func (s *Server) summaries() []projectSummary {
+	projects := s.manager.Projects()
+	out := make([]projectSummary, 0, len(projects))
+	for _, p := range projects {
+		summary := projectSummary{
+			Name:        p.Name,
+			Description: p.Description,
+			KeyPrefix:   p.KeyPrefix,
+			CreatedAt:   p.CreatedAt,
+			LastUsedAt:  p.LastUsedAt,
+			Levels:      map[string]uint64{},
+		}
+		if ix, ok := s.manager.Index(p.Name); ok {
+			summary.Total, summary.Levels = counts(ix)
+		}
+		out = append(out, summary)
+	}
+	return out
+}
+
+func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64*1024))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unable to read body"})
+		return
+	}
+	var payload struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	p, key, err := s.manager.Create(strings.TrimSpace(payload.Name), strings.TrimSpace(payload.Description))
+	if errors.Is(err, project.ErrInvalidName) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if errors.Is(err, project.ErrExists) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	if err != nil {
+		s.log.Error("create project failed", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unable to create project"})
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"project": p, "key": key})
+}
+
+func (s *Server) handleRotateProject(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	key, err := s.manager.Rotate(r.PathValue("name"))
+	if errors.Is(err, project.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
+		return
+	}
+	if err != nil {
+		s.log.Error("rotate project failed", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unable to rotate key"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"key": key})
+}
+
+func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	name := r.PathValue("name")
+	if err := s.manager.Delete(name); errors.Is(err, project.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
+		return
+	} else if err != nil {
+		s.log.Error("delete project failed", "project", name, "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unable to delete project"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "project": name})
+}
+
+func (s *Server) handleIndex(w http.ResponseWriter, _ *http.Request) {
 	page, err := assets.ReadFile("index.html")
 	if err != nil {
 		http.Error(w, "unable to load UI", http.StatusInternalServerError)
@@ -181,20 +409,41 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(page)
 }
 
-func (s *Server) authorized(r *http.Request) bool {
-	if s.token == "" {
+func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
+	if s.adminKey == "" {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "admin key is not configured"})
+		return false
+	}
+	key := r.Header.Get("X-Logrift-Admin")
+	if key == "" {
+		key = bearer(r)
+	}
+	if subtle.ConstantTimeCompare([]byte(key), []byte(s.adminKey)) == 1 {
 		return true
 	}
-	if header := r.Header.Get("Authorization"); strings.HasPrefix(header, "Bearer ") {
-		if equal(strings.TrimPrefix(header, "Bearer "), s.token) {
-			return true
-		}
-	}
-	return equal(r.Header.Get("X-Logrift-Token"), s.token)
+	writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid admin key"})
+	return false
 }
 
-func equal(a, b string) bool {
-	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+func bearer(r *http.Request) string {
+	if header := r.Header.Get("Authorization"); strings.HasPrefix(header, "Bearer ") {
+		return strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
+	}
+	return r.Header.Get("X-Logrift-Token")
+}
+
+func counts(ix *index.Index) (uint64, map[string]uint64) {
+	levels := map[string]uint64{}
+	for _, level := range []string{"trace", "debug", "info", "warn", "error", "fatal"} {
+		if n, err := ix.Count(level); err == nil {
+			levels[level] = n
+		}
+	}
+	total, err := ix.Count("")
+	if err != nil {
+		total = 0
+	}
+	return total, levels
 }
 
 // decodeEntries accepts a single JSON object, a JSON array of objects, or a

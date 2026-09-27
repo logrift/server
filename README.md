@@ -42,7 +42,7 @@ curl -s -X POST http://127.0.0.1:8787/api/logs \
 All settings live in the config file (`logrift.json`, or the file passed to
 `-config`). A missing file is written with the defaults below; absent keys keep
 their default value. Settings can also be viewed and edited at runtime from the
-**Settings** panel in the web UI (or `GET`/`PATCH /api/settings`); edits are
+**Server settings** page in the web UI (or `GET`/`PATCH /api/settings`); edits are
 saved back to the file. `addr`, `data_dir` and `reindex` only take effect after
 a restart.
 
@@ -62,7 +62,7 @@ and saves it in `<data>/admin.key` so it survives restarts.
 ## Compression and archives
 
 Each project has its own `compress_after_days` setting (seeded from the config
-default at creation, editable per project in the Settings panel or via `PATCH
+default at creation, editable on each project card in the Projects page or via `PATCH
 /api/projects/{name}`). Once logs are older than that many days:
 
 - their day file is gzip-compressed to `logs-YYYYMMDD.jsonl.gz` and kept on
@@ -83,6 +83,20 @@ setting to `0` to keep everything searchable forever.
   `/api/search` / `/api/stats` endpoints, which can read across projects.
 - Send a key as `Authorization: Bearer <key>` or `X-Logrift-Token: <key>`. The
   admin key is also accepted as `X-Logrift-Admin`.
+
+## Web interface
+
+- **Log explorer:** choose a project or all projects, search with labeled filters,
+  and expand any row (click or Enter) to inspect the full entry. Auto-refresh
+  updates the newest page every five seconds. Overview counts cover all searchable
+  history for the selected project; the result count reflects your filters.
+- **Projects:** create projects, view descriptions and storage, open searchable or
+  stored logs, and set each project's searchable history. Zero disables compression;
+  older logs remain available in Stored logs. Expand project actions to replace an
+  ingest key or delete a project.
+- **Server settings:** configure instance settings and defaults for new projects.
+- **Sign out:** removes the saved admin key from this browser and stops auto-refresh.
+  Enter the admin key again to sign in. It does not stop log collection or change keys.
 
 ## HTTP API
 

@@ -4,87 +4,32 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Logrift</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%277%27 fill=%27%23171f1d%27/%3E%3Cpath d=%27M9 7v18h15v-4H13V7z%27 fill=%27%23b9e77b%27/%3E%3C/svg%3E" />
+  <script>
+    // Apply the saved appearance before rendering to avoid a theme flash.
+    try {
+      const saved = localStorage.getItem("logrift_theme");
+      document.documentElement.dataset.theme = saved === "light" || saved === "dark"
+        ? saved : (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+    } catch { document.documentElement.dataset.theme = "dark"; }
+  </script>
   <style>
-    :root {
-      --bg: #0f141b; --panel: #161d27; --panel-2: #1d2733; --border: #263241;
-      --text: #d7e0ea; --muted: #8494a7; --accent: #5aa9ff;
-      --trace: #8494a7; --debug: #6fb3d2; --info: #4fb477; --warn: #d9a441;
-      --error: #e06a5f; --fatal: #c065d6;
-      --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-    }
-    * { box-sizing: border-box; }
-    body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-    header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--panel); position: sticky; top: 0; z-index: 10; }
-    header h1 { margin: 0; font-size: 16px; letter-spacing: .3px; }
-    header h1 span { color: var(--accent); }
-    .stats { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
-    .stat { font: 11px/1 var(--mono); text-transform: uppercase; letter-spacing: .5px; color: var(--muted); background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px; }
-    .stat b { color: var(--text); font-size: 12px; }
-    .stat.error b { color: var(--error); } .stat.warn b { color: var(--warn); }
-    .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--panel); position: sticky; top: 57px; z-index: 9; }
-    input, select { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; font: inherit; outline: none; }
-    input:focus, select:focus { border-color: var(--accent); }
-    #q { min-width: 220px; flex: 1 1 220px; font-family: var(--mono); }
-    button { background: var(--accent); color: #06121f; border: 0; border-radius: 6px; padding: 7px 13px; font: inherit; font-weight: 600; cursor: pointer; }
-    button.secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); }
-    button.danger { background: transparent; color: var(--error); border: 1px solid var(--error); }
-    button.small { padding: 4px 9px; font-size: 12px; }
-    label.toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
-    main { padding: 0 20px 60px; }
-    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; overflow: hidden; text-overflow: ellipsis; }
-    th { position: sticky; top: 118px; background: var(--bg); z-index: 8; font: 11px/1 var(--mono); text-transform: uppercase; letter-spacing: .6px; color: var(--muted); }
-    th.time, td.time { width: 178px; white-space: nowrap; font-family: var(--mono); color: var(--muted); }
-    th.project, td.project { width: 110px; }
-    th.level, td.level { width: 72px; }
-    th.service, td.service { width: 120px; color: var(--muted); }
-    td.msg { font-family: var(--mono); white-space: pre-wrap; word-break: break-word; }
-    tr.entry { cursor: pointer; } tr.entry:hover td { background: var(--panel); }
-    .badge { display: inline-block; font: 11px/1.6 var(--mono); text-transform: uppercase; padding: 1px 7px; border-radius: 4px; background: var(--panel-2); border: 1px solid var(--border); }
-    .badge.trace { color: var(--trace); } .badge.debug { color: var(--debug); } .badge.info { color: var(--info); }
-    .badge.warn { color: var(--warn); } .badge.error { color: var(--error); } .badge.fatal { color: var(--fatal); }
-    .badge.project { color: var(--accent); text-transform: none; }
-    tr.detail td { background: var(--panel); }
-    tr.detail pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12px/1.6 var(--mono); }
-    .empty { padding: 40px 10px; color: var(--muted); text-align: center; }
-    footer { display: flex; align-items: center; gap: 12px; padding: 14px 20px; color: var(--muted); }
-    #status.error { color: var(--error); }
-    a { color: var(--accent); }
-    .panel { border-bottom: 1px solid var(--border); background: var(--panel); padding: 16px 20px; }
-    .panel h2 { margin: 0 0 12px; font-size: 13px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); }
-    .panel-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-    .project-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
-    .project-item { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-2); }
-    .project-item .name { font-weight: 600; min-width: 120px; }
-    .project-item .meta { color: var(--muted); font: 11px/1.6 var(--mono); }
-    .project-item .spacer { margin-left: auto; }
-    .compress-field { display: inline-flex; gap: 5px; align-items: center; color: var(--muted); font-size: 12px; }
-    .compress-field input { width: 58px; padding: 3px 6px; font: 11px/1.4 var(--mono); }
-    .settings-grid { display: grid; grid-template-columns: max-content 1fr; gap: 10px 14px; align-items: center; max-width: 620px; margin-bottom: 14px; }
-    .settings-grid label { color: var(--muted); font-size: 13px; }
-    .settings-field { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-    .settings-field input[type="text"], .settings-field input[type="number"] { width: 160px; }
-    .restart-note { font: 10px/1 var(--mono); text-transform: uppercase; letter-spacing: .5px; color: var(--warn); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; }
-    .day-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 14px; }
-    .day-chip { display: inline-flex; gap: 7px; align-items: center; border: 1px solid var(--border); background: var(--panel-2); border-radius: 5px; padding: 4px 9px; font: 11px/1.4 var(--mono); color: var(--muted); cursor: pointer; }
-    .day-chip:hover { border-color: var(--accent); color: var(--text); }
-    .day-chip.active { border-color: var(--accent); color: var(--text); background: rgba(90,169,255,.1); }
-    .day-chip .gz { color: var(--accent); }
-    #archiveTable th { position: static; }
-    #archiveTable th.time, #archiveTable td.time { width: 178px; }
-    #archiveTable th.level, #archiveTable td.level { width: 72px; }
-    #archiveTable th.service, #archiveTable td.service { width: 120px; }
-    .keybox { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--accent); border-radius: 6px; background: rgba(90,169,255,.08); }
-    .keybox code { font-family: var(--mono); word-break: break-all; }
-    .hint { color: var(--muted); font-size: 12px; }
-    #login { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--bg); z-index: 100; }
-    #login .card { width: 340px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 24px; }
-    #login h1 { margin: 0 0 4px; font-size: 20px; }
-    #login p { color: var(--muted); margin: 0 0 16px; font-size: 13px; }
-    #login input { width: 100%; margin-bottom: 12px; }
-    #login button { width: 100%; }
-    #login .error { color: var(--error); font-size: 13px; min-height: 18px; margin-bottom: 8px; }
-    [hidden] { display: none !important; }
+    :root { color-scheme:dark; --button-text:#172414; --placeholder:#82968b; --login-glow:#26392b; --bg:#101615; --panel:#171f1d; --panel-2:#202a27; --border:#30403a; --text:#e7eee9; --muted:#a1b3a9; --accent:#b9e77b; --trace:#a1b3a9; --debug:#8bcad9; --info:#b9e77b; --warn:#f1c775; --error:#ff9389; --fatal:#e9a8d6; --mono:"IBM Plex Mono","DejaVu Sans Mono",Consolas,monospace; }
+    :root[data-theme="light"] { color-scheme:light; --bg:#f4f6f0; --panel:#ffffff; --panel-2:#eaf0e5; --border:#ccd7c7; --text:#1d2b22; --muted:#54665a; --accent:#376219; --button-text:#ffffff; --placeholder:#65766b; --login-glow:#e1edcf; --trace:#54665a; --debug:#206479; --info:#376219; --warn:#815509; --error:#b4332b; --fatal:#8a3779; }
+    #themeBtn { margin-top:auto; } #login #loginThemeBtn { width:auto; margin-top:18px; }
+    @media(max-width:650px) { #themeBtn { margin-top:0; } }
+    * { box-sizing:border-box; } [hidden] { display:none!important; }
+    body { margin:0; background:var(--bg); color:var(--text); font:14px/1.6 "Aptos","Trebuchet MS",sans-serif; }
+    button,input,select { font:inherit; } button { cursor:pointer; background:var(--accent); color:var(--button-text); border:1px solid transparent; border-radius:7px; padding:9px 15px; font-weight:600; } button:hover { filter:brightness(1.1); } button.secondary { background:var(--panel-2); color:var(--text); border-color:var(--border); } button.danger { background:transparent; color:var(--error); border-color:var(--border); } button.small { padding:6px 11px; font-size:12px; } button:disabled { opacity:.4; cursor:default; } :focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+    input,select { background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:7px; padding:9px 11px; min-width:0; } input::placeholder { color:var(--placeholder); } input[type=checkbox] { accent-color:var(--accent); } label.toggle { display:inline-flex; gap:8px; align-items:center; }
+    header { position:fixed; inset:0 auto 0 0; width:224px; padding:30px 18px; background:var(--panel); border-right:1px solid var(--border); display:flex; flex-direction:column; gap:8px; z-index:10; } header h1 { font-size:25px; letter-spacing:-1px; margin:0 12px 0; } header h1 span { color:var(--accent); } .brand-note { color:var(--muted); font:10px var(--mono); letter-spacing:2px; text-transform:uppercase; margin:0 12px 30px; } header button.secondary { text-align:left; border-color:transparent; background:transparent; padding:12px; font-size:14px; } header button.active { background:var(--panel-2); color:var(--accent); border-color:var(--border); } #logoutBtn { margin-top:0; } .session-note { font-size:11px; color:var(--muted); margin:0 12px; }
+    .workspace { margin-left:224px; padding:36px 36px 24px; } .page-heading { display:flex; align-items:center; justify-content:space-between; gap:20px; margin-bottom:26px; } .eyebrow { font:11px var(--mono); color:var(--accent); letter-spacing:2px; text-transform:uppercase; } h2 { font-size:28px; font-weight:500; letter-spacing:-.7px; margin:5px 0; } p { margin:4px 0; color:var(--muted); } .hint { color:var(--muted); font-size:12px; } .stats { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:24px; } .stat { padding:9px 14px; border:1px solid var(--border); border-radius:6px; color:var(--muted); font:11px var(--mono); } .stat b { margin-left:8px; color:var(--text); font-size:13px; } .stat.error b { color:var(--error); } .stat.warn b { color:var(--warn); }
+    .controls { display:flex; gap:12px; flex-wrap:wrap; align-items:end; padding:18px; border:1px solid var(--border); background:var(--panel); border-radius:10px 10px 0 0; } .filter { display:flex; flex-direction:column; gap:5px; font-size:11px; color:var(--muted); } .filter.search { flex:1 1 240px; } #q { width:100%; font-family:var(--mono); font-size:12px; } .controls .toggle { padding-bottom:10px; } #status { width:100%; font:11px var(--mono); color:var(--muted); } .error { color:var(--error)!important; }
+    main { overflow:auto; border:1px solid var(--border); border-top:0; border-radius:0 0 10px 10px; } table { width:100%; border-collapse:collapse; table-layout:fixed; } th,td { text-align:left; padding:13px 12px; border-bottom:1px solid var(--border); vertical-align:top; overflow:hidden; text-overflow:ellipsis; } th { background:var(--panel); color:var(--muted); font:10px var(--mono); letter-spacing:1px; text-transform:uppercase; } th.time,td.time { width:178px; font:11px/1.8 var(--mono); white-space:nowrap; color:var(--muted); } th.project,td.project { width:120px; } th.level,td.level { width:80px; } th.service,td.service { width:120px; color:var(--muted); } td.msg { font:12px/1.8 var(--mono); white-space:pre-wrap; overflow-wrap:anywhere; } tr.entry { cursor:pointer; } tr.entry:hover td,tr.detail td { background:var(--panel); } tr.detail pre { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; font:12px/1.8 var(--mono); } .badge { display:inline-block; font:10px/1.8 var(--mono); text-transform:uppercase; padding:1px 6px; border-radius:4px; background:var(--panel-2); } .badge.trace { color:var(--trace); } .badge.debug { color:var(--debug); } .badge.info { color:var(--info); } .badge.warn { color:var(--warn); } .badge.error { color:var(--error); } .badge.fatal { color:var(--fatal); } .badge.project { color:var(--accent); text-transform:none; } .empty { padding:55px 20px; color:var(--muted); text-align:center; } footer { display:flex; align-items:center; gap:12px; padding:18px 0; color:var(--muted); } #page { margin-left:auto; font:12px var(--mono); }
+    .panel { padding:0; } .panel-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; } .project-list { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:16px; margin:22px 0; } .project-item { padding:22px; border:1px solid var(--border); border-radius:10px; background:var(--panel); display:flex; flex-direction:column; gap:14px; min-width:0; } .project-item .name { font-size:19px; font-weight:600; overflow-wrap:anywhere; } .project-item .meta { color:var(--muted); font:11px/1.8 var(--mono); } .project-item .description { color:var(--muted); min-height:22px; overflow-wrap:anywhere; } .project-actions { display:flex; gap:8px; flex-wrap:wrap; } .project-item details { border-top:1px solid var(--border); padding-top:12px; } summary { cursor:pointer; color:var(--muted); font-size:12px; } details .project-actions { margin-top:12px; } .compress-field { display:flex; align-items:center; flex-wrap:wrap; gap:8px; font-size:12px; color:var(--muted); } .compress-field input { width:70px; } .create-card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:22px; } .create-card h3 { margin:0 0 16px; font-size:17px; } .create-card .filter { flex:1 1 190px; } .keybox { margin-top:18px; padding:18px; border:1px solid var(--accent); border-radius:8px; background:#b9e77b0a; } .keybox code { display:block; margin:12px 0; font-family:var(--mono); overflow-wrap:anywhere; } .settings-grid { display:grid; grid-template-columns:minmax(180px,260px) 1fr; gap:20px; align-items:center; max-width:780px; margin:24px 0; padding:24px; border:1px solid var(--border); background:var(--panel); border-radius:10px; } .settings-field { display:flex; align-items:center; flex-wrap:wrap; gap:10px; } .settings-field input:not([type=checkbox]) { width:180px; } .restart-note { font:10px var(--mono); color:var(--warn); } .day-list { display:flex; flex-wrap:wrap; gap:8px; margin:20px 0; } .day-chip { background:var(--panel); color:var(--muted); border:1px solid var(--border); font:11px var(--mono); } .day-chip .gz { color:var(--accent); } #archiveTable { min-width:600px; } .table-scroll { overflow:auto; } a { color:var(--accent); }
+    #login { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; padding:24px; background:radial-gradient(ellipse at 50% 0,var(--login-glow),var(--bg) 65%); z-index:100; } #login .card { width:420px; background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:36px; } #login h1 { font-size:32px; letter-spacing:-1px; margin:0 0 20px; } #login p { margin-bottom:24px; } #login input { width:100%; margin:6px 0 10px; } #login button { width:100%; } #login .error { min-height:20px; margin-bottom:8px; font-size:12px; } #login label { font-size:12px; color:var(--muted); }
+    @media(max-width:1000px) { header { width:180px; } .workspace { margin-left:180px; padding:24px 20px; } #logView table { min-width:720px; } }
+    @media(max-width:650px) { header { position:static; width:auto; flex-direction:row; flex-wrap:wrap; padding:14px; gap:4px; border-right:0; border-bottom:1px solid var(--border); } header h1 { width:100%; margin:0 8px 8px; } .brand-note,.session-note { display:none; } header button.secondary { padding:8px; font-size:12px; } #logoutBtn { margin-top:0; margin-left:auto; } .workspace { margin:0; padding:24px 14px; } .page-heading { align-items:start; flex-direction:column; gap:10px; } .settings-grid { grid-template-columns:1fr; padding:18px; gap:10px; } .project-list { grid-template-columns:1fr; } footer { flex-wrap:wrap; } h2 { font-size:25px; } }
   </style>
 </head>
 <body>
@@ -92,61 +37,81 @@
     <div class="card">
       <h1><span style="color:var(--accent)">log</span>rift</h1>
       <p>Enter the admin key to view and manage projects.</p>
+      <label for="loginKey">Admin key</label>
       <input id="loginKey" type="password" placeholder="Admin key" autocomplete="off" />
       <div class="error" id="loginError"></div>
-      <button id="loginBtn">Unlock</button>
+      <button id="loginBtn">Sign in</button>
+      <button id="loginThemeBtn" class="secondary small" type="button">Light mode</button>
     </div>
   </div>
 
   <div id="app" hidden>
     <header>
-      <h1><span>log</span>rift</h1>
-      <select id="projectSelect" title="Project"></select>
-      <button id="manageBtn" class="secondary small">Manage projects</button>
-      <button id="settingsBtn" class="secondary small">Settings</button>
-      <button id="logoutBtn" class="secondary small">Lock</button>
-      <div class="stats" id="stats"></div>
+      <h1><span>log</span>rift</h1><div class="brand-note">Observe your systems</div>
+      <button id="logsBtn" class="secondary active">Log explorer</button>
+      <button id="manageBtn" class="secondary">Projects</button>
+      <button id="settingsBtn" class="secondary">Server settings</button>
+      <button id="themeBtn" class="secondary" type="button">Light mode</button>
+      <button id="logoutBtn" class="secondary" title="Remove the saved admin key from this browser and sign out">Sign out</button>
+      <p class="session-note">Admin access · this browser</p>
     </header>
-
+    <div class="workspace">
+    <section id="logView">
+      <div class="page-heading"><div><span class="eyebrow">Your activity, in focus</span><h2>Log explorer</h2><p>Search recent logs. Select a row to inspect its full details.</p></div><label class="filter">Project<select id="projectSelect"></select></label></div>
+      <p class="hint" style="margin-bottom:10px">Project overview · all searchable history, before filters</p><div class="stats" id="stats" aria-label="Project totals across all searchable logs"></div>
     <div class="controls">
-      <input id="q" type="search" placeholder="Search messages and attributes…" autocomplete="off" />
-      <select id="level">
+      <label class="filter search">Search<input id="q" type="search" placeholder="Search messages and attributes…" autocomplete="off" /></label>
+      <label class="filter">Level<select id="level">
         <option value="">All levels</option>
         <option>trace</option><option>debug</option><option>info</option>
         <option>warn</option><option>error</option><option>fatal</option>
-      </select>
-      <input id="service" type="search" placeholder="Service" style="width: 130px" autocomplete="off" />
-      <select id="since">
+      </select></label>
+      <label class="filter">Service<input id="service" type="search" placeholder="Service" style="width: 130px" autocomplete="off" /></label>
+      <label class="filter">Time range<select id="since">
         <option value="15m">Last 15m</option>
         <option value="1h">Last hour</option>
         <option value="6h">Last 6 hours</option>
         <option value="24h" selected>Last 24 hours</option>
         <option value="7d">Last 7 days</option>
         <option value="">All time</option>
-      </select>
-      <select id="limit"><option>50</option><option selected>100</option><option>250</option><option>500</option></select>
+      </select></label>
+      <label class="filter">Rows per page<select id="limit"><option>50</option><option selected>100</option><option>250</option><option>500</option></select></label>
       <button id="apply">Search</button>
-      <label class="toggle"><input id="live" type="checkbox" /> Live</label>
-      <span id="status"></span>
+      <label class="toggle"><input id="live" type="checkbox" /> Auto-refresh · 5s</label>
+      <button id="resetFilters" class="secondary">Reset filters</button><span id="status" role="status"></span>
     </div>
 
+    <main>
+      <table>
+        <thead><tr><th class="time">Time</th><th class="project">Project</th><th class="level">Level</th><th class="service">Service</th><th>Message</th></tr></thead>
+        <tbody id="rows"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+      </table>
+    </main>
+    <footer>
+      <button id="prev" class="secondary">← Newer</button>
+      <button id="next" class="secondary">Older →</button>
+      <span id="page"></span>
+    </footer>
+    </section>
     <div class="panel" id="projectsPanel" hidden>
-      <h2>Projects</h2>
+      <span class="eyebrow">Separate streams. One place.</span><h2>Projects</h2><p>Each project has its own logs, ingest key, and searchable history.</p><div id="projectStatus" role="status" class="hint"></div>
       <div class="project-list" id="projectList"></div>
-      <div class="panel-row">
-        <input id="newProjectName" placeholder="project-name" autocomplete="off" />
-        <input id="newProjectDesc" placeholder="Description (optional)" autocomplete="off" style="min-width: 220px" />
-        <button id="createProject">Create project</button>
-      </div>
+      <form id="projectForm" class="create-card">
+        <h3>Create a project</h3><div class="panel-row">
+        <label class="filter">Project name<input id="newProjectName" placeholder="e.g. payments-api" autocomplete="off" required pattern="[a-z0-9][a-z0-9_\-]{0,63}" maxlength="64" /></label>
+        <label class="filter">Description (optional)<input id="newProjectDesc" placeholder="What sends logs to this project?" autocomplete="off" /></label>
+        <button id="createProject" type="submit">Create project</button></div>
+        <p class="hint">Use lowercase letters, numbers, hyphens, or underscores. An ingest key will be generated for your application.</p>
+      </form>
       <div class="keybox" id="keybox" hidden>
-        <div class="hint">Copy this key now — it is shown only once.</div>
+        <strong id="keyTitle">Project ingest key</strong><div class="hint">Save this key now. It is shown only once. Send it as Authorization: Bearer &lt;key&gt; when posting to /api/logs.</div>
         <code id="keyValue"></code>
         <button id="copyKey" class="secondary small">Copy</button>
       </div>
     </div>
 
     <div class="panel" id="settingsPanel" hidden>
-      <h2>Settings</h2>
+      <span class="eyebrow">Instance configuration</span><h2>Server settings</h2><p>Set defaults for new projects and configure this server.</p>
       <div class="hint" id="settingsHint"></div>
       <div class="settings-grid" style="margin-top: 12px">
         <label for="setCompressDays">Compress logs after (new projects)</label>
@@ -193,15 +158,9 @@
       </div>
       <div class="panel-row">
         <button id="settingsSave">Save settings</button>
-        <span class="hint" id="settingsStatus"></span>
+        <span class="hint" id="settingsStatus" role="status"></span>
       </div>
 
-      <h2 style="margin-top: 20px">Log compression per project</h2>
-      <div class="hint" style="margin-bottom: 10px">
-        Logs older than N days are gzip-compressed and removed from the search index; the files are
-        kept and stay viewable under “Browse stored logs”. 0 disables compression for a project.
-      </div>
-      <div class="project-list" id="settingsProjectList"></div>
     </div>
 
     <div class="panel" id="archivePanel" hidden>
@@ -213,34 +172,40 @@
         <input id="archiveTo" type="date" title="To date" />
         <button id="archiveLoad">View</button>
         <button id="archiveDownload" class="secondary">Download JSONL</button>
-        <button id="archiveClose" class="secondary">Close</button>
-        <span class="hint" id="archiveStatus"></span>
+        <button id="archiveClose" class="secondary">Back to projects</button>
+        <span class="hint" id="archiveStatus" role="status"></span>
       </div>
-      <table id="archiveTable" style="margin-top: 12px">
+      <div class="table-scroll"><table id="archiveTable" style="margin-top: 12px">
         <thead><tr><th class="time">Time</th><th class="level">Level</th><th class="service">Service</th><th>Message</th></tr></thead>
         <tbody id="archiveRows"></tbody>
-      </table>
+      </table></div>
       <div class="panel-row" style="margin-top: 10px">
         <button id="archiveMore" class="secondary" hidden>Load more</button>
       </div>
     </div>
 
-    <main>
-      <table>
-        <thead><tr><th class="time">Time</th><th class="project">Project</th><th class="level">Level</th><th class="service">Service</th><th>Message</th></tr></thead>
-        <tbody id="rows"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
-      </table>
-    </main>
-    <footer>
-      <button id="prev" class="secondary">← Newer</button>
-      <button id="next" class="secondary">Older →</button>
-      <span id="page"></span>
-    </footer>
+    </div>
   </div>
 
   <script>
     const $ = id => document.getElementById(id);
-    const state = { adminKey: localStorage.getItem("logrift_admin_key") || "", project: "all", offset: 0, total: 0, projects: [], archiveProject: "", archiveEntries: [], archiveHasMore: false };
+    function updateThemeButtons() {
+      const light = document.documentElement.dataset.theme === "light";
+      for (const id of ["themeBtn", "loginThemeBtn"]) {
+        $(id).textContent = light ? "Dark mode" : "Light mode";
+        $(id).setAttribute("aria-label", light ? "Switch to dark mode" : "Switch to light mode");
+        $(id).title = (light ? "Light" : "Dark") + " mode is active";
+      }
+    }
+    function toggleTheme() {
+      const theme = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+      document.documentElement.dataset.theme = theme;
+      try { localStorage.setItem("logrift_theme", theme); } catch { /* Appearance still changes when storage is unavailable. */ }
+      updateThemeButtons();
+    }
+    ["themeBtn", "loginThemeBtn"].forEach(id => $(id).addEventListener("click", toggleTheme));
+    updateThemeButtons();
+    const state = { adminKey: localStorage.getItem("logrift_admin_key") || "", project: localStorage.getItem("logrift_project") || "all", view: "logs", searchRequest: 0, offset: 0, total: 0, projects: [], archiveProject: "", archiveEntries: [], archiveHasMore: false };
 
     function esc(v) { return String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
     function fmtTime(iso) { const d = new Date(iso); if (isNaN(d)) return iso; const p = n => String(n).padStart(2, "0"); return `${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3,"0")}`; }
@@ -253,13 +218,41 @@
       return res;
     }
 
-    function lock() { localStorage.removeItem("logrift_admin_key"); state.adminKey = ""; $("app").hidden = true; $("login").hidden = false; }
+    function lock() { state.searchRequest++; if (timer) { clearInterval(timer); timer = null; } $("live").checked = false; $("loginKey").value = ""; $("keyValue").textContent = ""; $("keybox").hidden = true; localStorage.removeItem("logrift_admin_key"); state.adminKey = ""; $("app").hidden = true; $("login").hidden = false; }
     function unlock() { $("login").hidden = true; $("app").hidden = false; $("loginError").textContent = ""; init(); }
 
     async function tryUnlock(key) {
-      const res = await fetch("/api/projects", { headers: { Authorization: "Bearer " + key } });
-      if (!res.ok) { $("loginError").textContent = "Invalid admin key"; return; }
-      state.adminKey = key; localStorage.setItem("logrift_admin_key", key); unlock();
+      if (!key) { $("loginError").textContent = "Enter your admin key to continue."; return; }
+      $("loginBtn").disabled = true;
+      $("loginError").textContent = "";
+      try {
+        const res = await fetch("/api/projects", { headers: { Authorization: "Bearer " + key } });
+        if (!res.ok) throw new Error(res.status === 401 ? "Invalid admin key." : "Unable to sign in. Please try again.");
+        state.adminKey = key; localStorage.setItem("logrift_admin_key", key); $("loginKey").value = ""; unlock();
+      } catch (err) { $("loginError").textContent = err.message; }
+      finally { $("loginBtn").disabled = false; }
+    }
+    function showView(view) {
+      if (state.view !== view) window.scrollTo(0, 0);
+      state.view = view;
+      $("logView").hidden = view !== "logs";
+      $("projectsPanel").hidden = view !== "projects";
+      $("settingsPanel").hidden = view !== "settings";
+      $("archivePanel").hidden = view !== "archive";
+      for (const [id, target] of [["logsBtn", "logs"], ["manageBtn", "projects"], ["settingsBtn", "settings"]]) {
+        const active = view === target || (target === "projects" && view === "archive");
+        $(id).classList.toggle("active", active); $(id).setAttribute("aria-current", active ? "page" : "false");
+      }
+    }
+    function selectProject(name) {
+      state.project = name; state.offset = 0;
+      localStorage.setItem("logrift_project", name);
+      $("projectSelect").value = name; aggregateStats(); showView("logs"); load();
+    }
+    async function projectAction(action, message) {
+      $("projectStatus").classList.remove("error");
+      try { await action(); }
+      catch (err) { $("projectStatus").textContent = message + ": " + err.message; $("projectStatus").classList.add("error"); }
     }
     $("loginBtn").addEventListener("click", () => tryUnlock($("loginKey").value.trim()));
     $("loginKey").addEventListener("keydown", e => { if (e.key === "Enter") tryUnlock($("loginKey").value.trim()); });
@@ -279,15 +272,19 @@
     }
 
     async function load() {
+      const request = ++state.searchRequest;
+      $("status").textContent = "Loading logs…";
       try {
         const res = await api("/api/search?" + params());
         if (!res.ok) throw new Error("server returned " + res.status);
         const data = await res.json();
+        if (request !== state.searchRequest || !state.adminKey) return;
         state.total = data.total;
         render(data.entries, data.limit, data.offset);
-        $("status").textContent = new Date().toLocaleTimeString();
+        $("status").textContent = "Updated " + new Date().toLocaleTimeString() + " · Times shown in " + Intl.DateTimeFormat().resolvedOptions().timeZone;
         $("status").classList.remove("error");
       } catch (err) {
+        if (request !== state.searchRequest) return;
         $("status").textContent = "Error: " + err.message;
         $("status").classList.add("error");
       }
@@ -297,10 +294,10 @@
       entries = entries || [];
       const rows = $("rows");
       if (!entries.length) {
-        rows.innerHTML = '<tr><td colspan="5" class="empty">No matching logs.</td></tr>';
+        rows.innerHTML = '<tr><td colspan="5" class="empty">No matching logs.<br><span class="hint">Try a wider time range or reset your filters. New here? Create a project in Projects to start collecting logs.</span></td></tr>';
       } else {
         rows.innerHTML = entries.map((e, i) =>
-          `<tr class="entry" data-i="${i}">` +
+          `<tr class="entry" data-i="${i}" tabindex="0" role="button" aria-expanded="false" aria-label="Inspect log: ${esc(e.message || e.level)}">` +
           `<td class="time">${esc(fmtTime(e.time))}</td>` +
           `<td class="project"><span class="badge project">${esc(e.project || "—")}</span></td>` +
           `<td class="level"><span class="badge ${esc(e.level)}">${esc(e.level)}</span></td>` +
@@ -311,11 +308,13 @@
         rows.querySelectorAll("tr.entry").forEach(row => row.addEventListener("click", () => {
           const detail = rows.querySelector('tr.detail[data-i="' + row.dataset.i + '"]');
           detail.hidden = !detail.hidden;
+          row.setAttribute("aria-expanded", String(!detail.hidden));
         }));
+        rows.querySelectorAll("tr.entry").forEach(row => row.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); row.click(); } }));
       }
       const from = state.total === 0 ? 0 : offset + 1;
       const to = Math.min(offset + limit, state.total);
-      $("page").textContent = state.total > limit ? `${from}–${to} of ${state.total} (top ${Math.min(state.total, limit + offset)})` : `${state.total} entries`;
+      $("page").textContent = `${from}–${to} of ${state.total.toLocaleString()} matching logs`;
       $("prev").disabled = offset <= 0;
       $("next").disabled = offset + limit >= state.total;
     }
@@ -329,7 +328,7 @@
         storage += p.total_bytes || 0;
         for (const k of Object.keys(levels)) levels[k] += (p.levels && p.levels[k]) || 0;
       }
-      const parts = [`<div class="stat">total <b>${total}</b></div>`, `<div class="stat">storage <b>${esc(fmtBytes(storage))}</b></div>`];
+      const parts = [`<div class="stat">searchable <b>${total}</b></div>`, `<div class="stat">storage <b>${esc(fmtBytes(storage))}</b></div>`];
       for (const [level, count] of Object.entries(levels)) {
         const cls = level === "error" || level === "fatal" ? " error" : level === "warn" ? " warn" : "";
         parts.push(`<div class="stat${cls}">${level} <b>${count}</b></div>`);
@@ -340,8 +339,9 @@
     async function refreshProjects() {
       try {
         const res = await api("/api/projects");
-        if (!res.ok) return;
+        if (!res.ok) throw new Error("Unable to load projects (" + res.status + ")");
         const data = await res.json();
+        if (!state.adminKey) return;
         state.projects = data.projects || [];
         const select = $("projectSelect");
         const current = state.project;
@@ -351,63 +351,51 @@
         state.project = select.value;
         aggregateStats();
         renderProjectList();
-      } catch { /* best effort */ }
+      } catch (err) { $("projectStatus").textContent = err.message; $("projectStatus").classList.add("error"); }
     }
 
     function renderProjectList() {
       const list = $("projectList");
-      if (!state.projects.length) { list.innerHTML = '<div class="hint">No projects yet. Create one below.</div>'; return; }
+      if (!state.projects.length) { list.innerHTML = '<div class="empty">Your first project starts here.<br><span class="hint">Create a project below, then use its ingest key to send logs from your application.</span></div>'; return; }
+      // Preserve unsaved retention edits and expanded controls during background refreshes.
+      const drafts = new Map([...list.querySelectorAll(".project-item")].map(item => [item.dataset.name, { value: item.querySelector("input").value !== item.querySelector("input").dataset.saved ? item.querySelector("input").value : undefined, open: item.querySelector("details").open }]));
+      const focused = document.activeElement;
+      const focusedName = focused?.matches('[data-role="compress-days"]') ? focused.closest(".project-item").dataset.name : null;
       list.innerHTML = state.projects.map(p =>
-        `<div class="project-item" data-name="${esc(p.name)}">` +
-        `<span class="name">${esc(p.name)}</span>` +
-        `<span class="meta">key ${esc(p.key_prefix)}… · ${p.total} entries · ${esc(fmtBytes(p.logs_bytes))} logs + ${esc(fmtBytes(p.index_bytes))} index · used ${p.last_used_at ? esc(fmtTime(p.last_used_at)) : "never"}</span>` +
-        `<span class="spacer"></span>` +
-        `<button class="secondary small" data-action="archive">Browse stored logs</button>` +
-        `<button class="secondary small" data-action="rotate">Rotate key</button>` +
-        `<button class="danger small" data-action="delete">Delete</button>` +
-        `</div>`).join("");
+        `<article class="project-item" data-name="${esc(p.name)}">` +
+        `<div><span class="name">${esc(p.name)}</span><div class="description">${esc(p.description || "No description")}</div></div>` +
+        `<div class="meta">${Number(p.total || 0).toLocaleString()} searchable logs · ${esc(fmtBytes(p.total_bytes))} on disk<br>Last received: ${p.last_used_at && !p.last_used_at.startsWith("0001") ? esc(fmtTime(p.last_used_at)) : "No logs received yet"}</div>` +
+        `<div class="project-actions"><button class="small" data-action="logs">Explore logs</button><button class="secondary small" data-action="archive">Stored logs</button></div>` +
+        `<label class="compress-field">Searchable history <input aria-label="Searchable history for ${esc(p.name)}" type="number" min="0" step="1" value="${esc(drafts.get(p.name)?.value ?? p.compress_after_days)}" data-role="compress-days" data-saved="${p.compress_after_days}" /> days <button class="secondary small" data-action="save-compress">Save</button></label>` +
+        `<div class="hint">0 keeps all logs searchable. Older logs are compressed and kept in Stored logs.</div>` +
+        `<details ${drafts.get(p.name)?.open ? "open" : ""}><summary>API key &amp; project actions</summary><div class="meta">Ingest key: ${esc(p.key_prefix)}…<br>Logs: ${esc(fmtBytes(p.logs_bytes))} · Index: ${esc(fmtBytes(p.index_bytes))}</div>` +
+        `<div class="project-actions"><button class="secondary small" data-action="rotate">Replace ingest key</button><button class="danger small" data-action="delete">Delete project</button></div></details></article>`).join("");
       list.querySelectorAll("button[data-action]").forEach(btn => btn.addEventListener("click", () => {
-        const item = btn.closest(".project-item");
-        const name = item.dataset.name;
-        if (btn.dataset.action === "rotate") rotateProject(name);
-        else if (btn.dataset.action === "delete") deleteProject(name);
+        const item = btn.closest(".project-item"), name = item.dataset.name;
+        if (btn.dataset.action === "logs") selectProject(name);
+        else if (btn.dataset.action === "rotate") projectAction(() => rotateProject(name), "Unable to replace key");
+        else if (btn.dataset.action === "delete") projectAction(() => deleteProject(name), "Unable to delete project");
         else if (btn.dataset.action === "archive") openArchive(name);
+        else projectAction(() => saveCompress(name, item.querySelector("input")), "Unable to save history");
       }));
-    }
-
-    function renderSettingsProjects() {
-      const list = $("settingsProjectList");
-      if (!state.projects.length) { list.innerHTML = '<div class="hint">No projects yet. Create one under “Manage projects”.</div>'; return; }
-      list.innerHTML = state.projects.map(p =>
-        `<div class="project-item" data-name="${esc(p.name)}">` +
-        `<span class="name">${esc(p.name)}</span>` +
-        `<span class="meta">${p.total} entries · ${esc(fmtBytes(p.total_bytes))} on disk</span>` +
-        `<span class="spacer"></span>` +
-        `<span class="compress-field">compress after <input type="number" min="0" step="1" value="${p.compress_after_days}" data-role="compress-days" title="Days after which logs are compressed and removed from the index (0 = never)" /> days</span>` +
-        `<button class="secondary small" data-action="save-compress">Save</button>` +
-        `</div>`).join("");
-      list.querySelectorAll('button[data-action="save-compress"]').forEach(btn => btn.addEventListener("click", () => {
-        const item = btn.closest(".project-item");
-        saveCompress(item.dataset.name, item.querySelector('input[data-role="compress-days"]'));
-      }));
+      if (focusedName) [...list.querySelectorAll(".project-item")].find(item => item.dataset.name === focusedName)?.querySelector("input").focus();
     }
 
     async function saveCompress(name, input) {
       const days = Number(input.value);
-      if (!Number.isInteger(days) || days < 0) { alert("Compression age must be zero or a positive number of days"); return; }
+      if (input.value === "" || !Number.isInteger(days) || days < 0) throw new Error("Enter zero or a positive whole number of days.");
       const res = await api(`/api/projects/${encodeURIComponent(name)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ compress_after_days: days }) });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) { alert(data.error || "Unable to save setting"); return; }
-      $("settingsStatus").textContent = `Saved compression setting for ${name}`;
+      if (!res.ok) throw new Error(data.error || "Unable to save setting");
+      $("projectStatus").textContent = `Searchable history saved for ${name}.`;
       await refreshProjects();
-      renderSettingsProjects();
       if (state.archiveProject === name) setArchiveHint();
     }
 
     async function loadSettings() {
       try {
         const res = await api("/api/settings");
-        if (!res.ok) return;
+        if (!res.ok) throw new Error("Unable to load settings (" + res.status + ")");
         const data = await res.json();
         const s = data.settings || {};
         $("setCompressDays").value = s.compress_after_days ?? 0;
@@ -444,7 +432,9 @@
       }
     }
 
-    function showKey(key) {
+    function showKey(key, name) {
+      $("keyTitle").textContent = "Ingest key for " + name;
+      $("copyKey").textContent = "Copy key";
       $("keyValue").textContent = key;
       $("keybox").hidden = false;
     }
@@ -454,27 +444,35 @@
       if (!name) return;
       const res = await api("/api/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, description: $("newProjectDesc").value.trim() }) });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) { alert(data.error || "Unable to create project"); return; }
+      if (!res.ok) throw new Error(data.error || "Unable to create project");
       $("newProjectName").value = ""; $("newProjectDesc").value = "";
-      showKey(data.key);
+      showKey(data.key, name);
       await refreshProjects();
+      state.project = name; $("projectSelect").value = name; localStorage.setItem("logrift_project", name); aggregateStats();
+      $("projectStatus").textContent = `Created ${name}. Save the ingest key below to connect your application.`;
+      $("keybox").scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
 
     async function rotateProject(name) {
-      if (!confirm(`Rotate the API key for "${name}"? The old key will stop working.`)) return;
+      if (!confirm(`Replace the ingest key for "${name}"? The old key will stop working.`)) return;
       const res = await api(`/api/projects/${encodeURIComponent(name)}/rotate`, { method: "POST" });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) { alert(data.error || "Unable to rotate key"); return; }
-      showKey(data.key);
+      if (!res.ok) throw new Error(data.error || "Unable to replace key");
+      showKey(data.key, name);
+      $("projectStatus").textContent = `Ingest key replaced for ${name}. Update your application with the new key below.`;
       await refreshProjects();
+      $("keybox").scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
 
     async function deleteProject(name) {
       if (!confirm(`Delete project "${name}" and all of its logs? This cannot be undone.`)) return;
       const res = await api(`/api/projects/${encodeURIComponent(name)}`, { method: "DELETE" });
-      if (!res.ok) { const data = await res.json().catch(() => ({})); alert(data.error || "Unable to delete project"); return; }
+      if (!res.ok) { const data = await res.json().catch(() => ({})); throw new Error(data.error || "Unable to delete project"); }
       $("keybox").hidden = true;
+      state.offset = 0;
       await refreshProjects();
+      localStorage.setItem("logrift_project", state.project);
+      $("projectStatus").textContent = `Deleted ${name}.`;
       load();
     }
 
@@ -492,8 +490,7 @@
       state.archiveHasMore = false;
       $("archiveProjectName").textContent = name;
       setArchiveHint();
-      $("archivePanel").hidden = false;
-      $("projectsPanel").hidden = true;
+      showView("archive");
       const to = new Date();
       const from = new Date(to.getTime() - 7 * 86400000);
       $("archiveFrom").value = from.toISOString().slice(0, 10);
@@ -510,7 +507,7 @@
         const data = await res.json();
         const days = data.days || [];
         $("archiveDays").innerHTML = days.map(d =>
-          `<span class="day-chip" data-date="${esc(d.date)}" title="${esc(d.name)}">${esc(d.date)} · ${esc(fmtBytes(d.bytes))}${d.compressed ? ' <span class="gz">gz</span>' : ""}</span>`
+          `<button class="day-chip" data-date="${esc(d.date)}" title="${esc(d.name)}">${esc(d.date)} · ${esc(fmtBytes(d.bytes))}${d.compressed ? ' <span class="gz">archived</span>' : ""}</button>`
         ).join("") || '<div class="hint">No stored days yet.</div>';
         $("archiveDays").querySelectorAll(".day-chip").forEach(chip => chip.addEventListener("click", () => {
           $("archiveFrom").value = chip.dataset.date;
@@ -522,7 +519,7 @@
 
     async function loadArchive(reset) {
       const from = $("archiveFrom").value, to = $("archiveTo").value;
-      if (!from || !to) return;
+      if (!from || !to || from > to) { $("archiveStatus").textContent = "Choose a valid date range; the start must be on or before the end."; return; }
       const p = new URLSearchParams({ from, to, limit: "100" });
       if (!reset) p.set("offset", String(state.archiveEntries.length));
       $("archiveStatus").textContent = "Loading…";
@@ -545,7 +542,7 @@
         rows.innerHTML = '<tr><td colspan="4" class="empty">No stored logs in this range.</td></tr>';
       } else {
         rows.innerHTML = state.archiveEntries.map((e, i) =>
-          `<tr class="entry" data-i="${i}">` +
+          `<tr class="entry" data-i="${i}" tabindex="0" role="button" aria-expanded="false" aria-label="Inspect log: ${esc(e.message || e.level)}">` +
           `<td class="time">${esc(fmtTime(e.time))}</td>` +
           `<td class="level"><span class="badge ${esc(e.level)}">${esc(e.level)}</span></td>` +
           `<td class="service">${esc(e.service || "—")}</td>` +
@@ -555,14 +552,16 @@
         rows.querySelectorAll("tr.entry").forEach(row => row.addEventListener("click", () => {
           const detail = rows.querySelector('tr.detail[data-i="' + row.dataset.i + '"]');
           detail.hidden = !detail.hidden;
+          row.setAttribute("aria-expanded", String(!detail.hidden));
         }));
+        rows.querySelectorAll("tr.entry").forEach(row => row.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); row.click(); } }));
       }
       $("archiveMore").hidden = !state.archiveHasMore;
     }
 
     async function downloadArchive() {
       const from = $("archiveFrom").value, to = $("archiveTo").value;
-      if (!from || !to) return;
+      if (!from || !to || from > to) { $("archiveStatus").textContent = "Choose a valid date range; the start must be on or before the end."; return; }
       const p = new URLSearchParams({ from, to, raw: "1" });
       $("archiveStatus").textContent = "Preparing download…";
       try {
@@ -582,21 +581,19 @@
       }
     }
 
-    $("manageBtn").addEventListener("click", () => { $("projectsPanel").hidden = !$("projectsPanel").hidden; });
-    $("settingsBtn").addEventListener("click", () => {
-      const opening = $("settingsPanel").hidden;
-      $("settingsPanel").hidden = !opening;
-      if (opening) { loadSettings(); renderSettingsProjects(); }
-    });
+    $("logsBtn").addEventListener("click", () => { showView("logs"); load(); });
+    $("manageBtn").addEventListener("click", () => { showView("projects"); refreshProjects(); });
+    $("settingsBtn").addEventListener("click", () => { showView("settings"); loadSettings(); });
     $("settingsSave").addEventListener("click", saveSettings);
     $("archiveLoad").addEventListener("click", () => loadArchive(true));
     $("archiveMore").addEventListener("click", () => loadArchive(false));
     $("archiveDownload").addEventListener("click", downloadArchive);
-    $("archiveClose").addEventListener("click", () => { $("archivePanel").hidden = true; });
+    $("archiveClose").addEventListener("click", () => { showView("projects"); });
     ["archiveFrom", "archiveTo"].forEach(id => $(id).addEventListener("keydown", e => { if (e.key === "Enter") loadArchive(true); }));
-    $("createProject").addEventListener("click", createProject);
-    $("copyKey").addEventListener("click", async () => { try { await navigator.clipboard.writeText($("keyValue").textContent); $("copyKey").textContent = "Copied"; setTimeout(() => $("copyKey").textContent = "Copy", 1200); } catch {} });
-    $("projectSelect").addEventListener("change", () => { state.project = $("projectSelect").value; state.offset = 0; aggregateStats(); load(); });
+    $("projectForm").addEventListener("submit", async e => { e.preventDefault(); $("createProject").disabled = true; await projectAction(createProject, "Unable to create project"); $("createProject").disabled = false; });
+    $("copyKey").addEventListener("click", async () => { try { await navigator.clipboard.writeText($("keyValue").textContent); $("copyKey").textContent = "Copied"; setTimeout(() => $("copyKey").textContent = "Copy key", 1200); } catch { $("projectStatus").textContent = "Clipboard unavailable. Select and copy the key below."; } });
+    $("projectSelect").addEventListener("change", () => { selectProject($("projectSelect").value); });
+    $("resetFilters").addEventListener("click", () => { $("q").value = ""; $("service").value = ""; $("level").value = ""; $("since").value = "24h"; $("limit").value = "100"; state.offset = 0; load(); });
     $("apply").addEventListener("click", () => { state.offset = 0; load(); });
     $("q").addEventListener("keydown", e => { if (e.key === "Enter") { state.offset = 0; load(); } });
     ["level", "service", "since", "limit"].forEach(id => $(id).addEventListener("change", () => { state.offset = 0; load(); }));
@@ -606,10 +603,10 @@
     let timer = null;
     $("live").addEventListener("change", () => {
       if (timer) { clearInterval(timer); timer = null; }
-      if ($("live").checked) { state.offset = 0; load(); refreshProjects(); timer = setInterval(() => { load(); refreshProjects(); }, 5000); }
+      if ($("live").checked) { state.offset = 0; load(); refreshProjects(); timer = setInterval(() => { if (state.adminKey && state.view === "logs") { state.offset = 0; load(); refreshProjects(); } }, 5000); }
     });
 
-    async function init() { await refreshProjects(); await load(); }
+    async function init() { await refreshProjects(); showView(state.projects.length ? "logs" : "projects"); await load(); }
     setInterval(() => { if (!$("app").hidden) refreshProjects(); }, 30000);
 
     if (state.adminKey) {

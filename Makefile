@@ -1,11 +1,21 @@
-.PHONY: build
+.PHONY: build clean run fmt vet test check
 
-build: clean
-	go build -o bin/server cmd/server/main.go
+build:
+	go build -o bin/server ./cmd/server
 
 clean:
-	rm bin/server
+	rm -f bin/server
 
 run: build
 	bin/server
 
+fmt:
+	gofmt -w .
+
+vet:
+	go vet ./...
+
+test:
+	go test ./...
+
+check: fmt vet test

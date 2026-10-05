@@ -68,6 +68,13 @@ func TestPersistenceAcrossReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
+	added, err := reopened.CatchUp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if added != 0 {
+		t.Fatalf("restart re-indexed %d entries, want 0", added)
+	}
 	if _, ok := reopened.Authenticate(key); !ok {
 		t.Fatal("project key not persisted")
 	}

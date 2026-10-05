@@ -40,9 +40,18 @@ func Defaults() Config {
 	}
 }
 
+// Environment overrides let container deployments that mount the data
+// directory set the listen address and data directory without editing the
+// config file. They take precedence over the file and are not persisted.
+const (
+	envAddr    = "LOGRIFT_ADDR"
+	envDataDir = "LOGRIFT_DATA_DIR"
+)
+
 // Load reads the config file at path. A missing file is written with defaults
 // and those defaults are returned. Settings absent from an existing file keep
 // their default value; an explicit zero disables the setting where allowed.
+// The LOGRIFT_ADDR and LOGRIFT_DATA_DIR environment variables override the file.
 func Load(path string) (Config, error) {
 	cfg := Defaults()
 	data, err := os.ReadFile(path)
@@ -50,19 +59,27 @@ func Load(path string) (Config, error) {
 		if err := Save(path, cfg); err != nil {
 			return Config{}, err
 		}
-		return cfg, nil
-	}
-	if err != nil {
+	} else if err != nil {
 		return Config{}, fmt.Errorf("read config: %w", err)
-	}
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	} else if err := json.Unmarshal(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	cfg.normalize()
+	applyEnv(&cfg)
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// applyEnv overlays the environment overrides onto cfg.
+func applyEnv(c *Config) {
+	if v := strings.TrimSpace(os.Getenv(envAddr)); v != "" {
+		c.Addr = v
+	}
+	if v := strings.TrimSpace(os.Getenv(envDataDir)); v != "" {
+		c.DataDir = v
+	}
 }
 
 // normalize replaces missing or nonsensical values with defaults.

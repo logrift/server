@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -35,6 +36,34 @@ func TestLoadOverridesKeepDefaults(t *testing.T) {
 	}
 	if cfg.DataDir != Defaults().DataDir || cfg.MaxResults != Defaults().MaxResults {
 		t.Fatalf("defaults lost: %+v", cfg)
+	}
+}
+
+func TestLoadAppliesEnvOverrides(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "logrift.json")
+	t.Setenv(envAddr, "0.0.0.0:9999")
+	t.Setenv(envDataDir, "/var/lib/logrift")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Addr != "0.0.0.0:9999" || cfg.DataDir != "/var/lib/logrift" {
+		t.Fatalf("cfg = %+v", cfg)
+	}
+	// Overrides are not written back to the file.
+	reopened, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened.Addr != "0.0.0.0:9999" {
+		t.Fatalf("override lost on reload: %+v", reopened)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "0.0.0.0:9999") {
+		t.Fatalf("override persisted to config file: %s", data)
 	}
 }
 

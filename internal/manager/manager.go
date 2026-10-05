@@ -115,6 +115,20 @@ func (m *Manager) Projects() []project.Project { return m.registry.List() }
 // Get returns a project's metadata.
 func (m *Manager) Get(name string) (project.Project, bool) { return m.registry.Get(name) }
 
+// Ready reports whether every registered project has an open store and index.
+// It is used by the readiness probe to distinguish a serving process from one
+// that is still starting up or has lost a project runtime.
+func (m *Manager) Ready() error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, p := range m.registry.List() {
+		if _, ok := m.runtimes[p.Name]; !ok {
+			return fmt.Errorf("project %q is not open", p.Name)
+		}
+	}
+	return nil
+}
+
 // Collector returns the collector for a project.
 func (m *Manager) Collector(name string) (*collect.Collector, bool) {
 	m.mu.RLock()

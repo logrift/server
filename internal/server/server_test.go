@@ -229,6 +229,26 @@ func TestHealth(t *testing.T) {
 	}
 }
 
+func TestReady(t *testing.T) {
+	ts, mgr := newTestServer(t)
+	defer ts.Close()
+	if _, _, err := mgr.Create("api", "", 0); err != nil {
+		t.Fatal(err)
+	}
+	res := request(t, http.MethodGet, ts.URL+"/readyz", "", "", false)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("ready status = %d, want 200", res.StatusCode)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body["status"] != "ready" {
+		t.Fatalf("status = %q, want ready", body["status"])
+	}
+}
+
 func TestSearchNoiseFilters(t *testing.T) {
 	ts, mgr := newTestServer(t)
 	defer ts.Close()

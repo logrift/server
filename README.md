@@ -37,6 +37,23 @@ curl -s -X POST http://127.0.0.1:8787/api/logs \
   -d '[{"level":"error","service":"api","msg":"boom","status":500}]'
 ```
 
+## Docker
+
+A multi-stage image builds a static binary on a minimal distroless base and
+runs as a non-root user:
+
+```sh
+docker build -t logrift .
+docker run -d --init --name logrift -p 8787:8787 -v logrift-data:/data logrift
+```
+
+Data (registry, admin key, logs, index) lives on the `/data` volume. The image
+sets `LOGRIFT_ADDR=0.0.0.0:8787` and `LOGRIFT_DATA_DIR=/data` so it is reachable
+from outside the container and keeps state on the volume; the first run prints
+the generated admin key to the container logs. The same two environment
+variables are honored by a normal binary. To change other settings, mount your
+own config file with `-v /path/logrift.json:/data/logrift.json`.
+
 ## Configuration
 
 All settings live in the config file (`logrift.json`, or the file passed to
@@ -45,6 +62,11 @@ their default value. Settings can also be viewed and edited at runtime from the
 **Server settings** page in the web UI (or `GET`/`PATCH /api/settings`); edits are
 saved back to the file. `addr`, `data_dir` and `reindex` only take effect after
 a restart.
+
+`addr` and `data_dir` may also be set with the `LOGRIFT_ADDR` and
+`LOGRIFT_DATA_DIR` environment variables. When set, they take precedence over
+the file and are not written back to it (they are how the Docker image
+configures the listen address and data volume).
 
 | Key | Default | Purpose |
 | --- | --- | --- |
@@ -133,6 +155,7 @@ setting to `0` to keep everything searchable forever.
 | `GET /api/projects/{name}/days` | admin | List stored day files with sizes and compression state. |
 | `GET /api/projects/{name}/archive` | admin | Stored log lines for `from`/`to` dates (YYYY-MM-DD). Returns a JSON page (`limit`, `offset`); `raw=1` downloads the plain JSONL. |
 | `GET /healthz` | none | Liveness check. |
+| `GET /readyz` | none | Readiness check; `503` until every project's store and index are open. |
 
 `project` defaults to `all`, which merges results across projects newest first.
 `since`/`until` accept a duration relative to now (`15m`, `1h`, `7d`) or an
@@ -187,7 +210,11 @@ internal/server           ingest + admin + query API + embedded web UI
 
 ```sh
 make check        # gofmt, go vet, go test
+make race         # go test -race ./...
 ```
+
+CI runs the format check, `go vet`, the tests (including `-race`), the build and
+`govulncheck` on every push and pull request.
 
 ## Persistence and recovery
 
@@ -217,3 +244,7 @@ project's index and meta file are removed and rebuilt from its JSONL files.
 - Searching is serialized with a mutex per project; `all` queries each project
   in turn and merges.
 - JSONL appends are single writes but not fsynced per line.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

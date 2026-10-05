@@ -16,21 +16,27 @@ import (
 	"github.com/blevesearch/bleve/v2"
 	"github.com/blevesearch/bleve/v2/mapping"
 	"github.com/blevesearch/bleve/v2/search/query"
+	"github.com/blevesearch/bleve/v2/util"
 
 	"logrift.dev/server/internal/entry"
 )
 
-const metaVersion = 1
+// Version 3 refreshes stored entries with normalized request fields.
+const metaVersion = 3
 
 // Query describes a log search.
 type Query struct {
-	Text    string
-	Level   string
-	Service string
-	Since   *time.Time
-	Until   *time.Time
-	Limit   int
-	Offset  int
+	Text              string
+	Level             string
+	Service           string
+	Since             *time.Time
+	Until             *time.Time
+	Limit             int
+	Offset            int
+	HideMonitors      bool
+	HideScans         bool
+	MonitorUserAgents []string
+	BotScanPaths      []string
 }
 
 // Result is a page of matched entries.
@@ -87,6 +93,22 @@ func Open(path string) (*Index, bool, error) {
 		return nil, false, fmt.Errorf("open index: %w", err)
 	}
 
+	if !created {
+		// Install the same field mappings on legacy indexes before catch-up.
+		existing := idx.Mapping().(*mapping.IndexMappingImpl)
+		doc := existing.TypeMapping["_default"]
+		if doc.Properties["request_agent"] == nil || doc.Properties["request_path"] == nil {
+			addRequestMappings(doc)
+			encoded, mapErr := json.Marshal(existing)
+			if mapErr == nil {
+				mapErr = idx.SetInternal(util.MappingInternalKey, encoded)
+			}
+			if mapErr != nil {
+				_ = idx.Close()
+				return nil, false, fmt.Errorf("update request mapping: %w", mapErr)
+			}
+		}
+	}
 	i := &Index{idx: idx, metaPath: metaPath(path), offsets: map[string]int64{}}
 	if !created {
 		if err := i.loadMeta(); err != nil {
@@ -343,20 +365,40 @@ func buildQuery(q Query) query.Query {
 	}
 
 	if len(musts) == 0 {
-		return bleve.NewMatchAllQuery()
+		musts = append(musts, bleve.NewMatchAllQuery())
 	}
-	bool := bleve.NewBooleanQuery()
-	bool.AddMust(musts...)
-	return bool
+	boolean := bleve.NewBooleanQuery()
+	boolean.AddMust(musts...)
+	for _, filter := range []struct {
+		field    string
+		enabled  bool
+		patterns []string
+	}{
+		{"request_agent", q.HideMonitors, q.MonitorUserAgents},
+		{"request_path", q.HideScans, q.BotScanPaths},
+	} {
+		if !filter.enabled {
+			continue
+		}
+		for _, pattern := range filter.patterns {
+			wildcard := bleve.NewWildcardQuery(strings.ToLower(strings.TrimSpace(pattern)))
+			wildcard.SetField(filter.field)
+			boolean.AddMustNot(wildcard)
+		}
+	}
+	return boolean
 }
 
 func document(e entry.Entry, raw []byte) map[string]any {
+	agents, paths := e.RequestFields()
 	doc := map[string]any{
-		"time":    e.Time,
-		"level":   e.Level,
-		"service": e.Service,
-		"message": e.Message,
-		"raw":     string(raw),
+		"time":          e.Time,
+		"level":         e.Level,
+		"service":       e.Service,
+		"message":       e.Message,
+		"raw":           string(raw),
+		"request_agent": agents,
+		"request_path":  paths,
 	}
 	for k, v := range e.Attrs {
 		doc["attr."+k] = v
@@ -394,7 +436,20 @@ func buildMapping() (mapping.IndexMapping, error) {
 	rawField.Store = true
 	rawField.Index = false
 	doc.AddFieldMappingsAt("raw", rawField)
+	addRequestMappings(doc)
 
 	im.AddDocumentMapping("_default", doc)
 	return im, nil
+}
+
+func addRequestMappings(doc *mapping.DocumentMapping) {
+	for _, name := range []string{"request_agent", "request_path"} {
+		if doc.Properties[name] != nil {
+			continue
+		}
+		field := bleve.NewTextFieldMapping()
+		field.Analyzer = "keyword"
+		field.IncludeInAll = false
+		doc.AddFieldMappingsAt(name, field)
+	}
 }

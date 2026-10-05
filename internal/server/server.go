@@ -101,19 +101,27 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var payload struct {
-		Addr                *string `json:"addr"`
-		DataDir             *string `json:"data_dir"`
-		Reindex             *bool   `json:"reindex"`
-		CompressAfterDays   *int    `json:"compress_after_days"`
-		CompressIntervalMin *int    `json:"compress_interval_min"`
-		MaxBodyKB           *int    `json:"max_body_kb"`
-		MaxResults          *int    `json:"max_results"`
+		Addr                *string   `json:"addr"`
+		DataDir             *string   `json:"data_dir"`
+		Reindex             *bool     `json:"reindex"`
+		CompressAfterDays   *int      `json:"compress_after_days"`
+		CompressIntervalMin *int      `json:"compress_interval_min"`
+		MaxBodyKB           *int      `json:"max_body_kb"`
+		MaxResults          *int      `json:"max_results"`
+		MonitorUserAgents   *[]string `json:"monitor_user_agents"`
+		BotScanPaths        *[]string `json:"bot_scan_paths"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
 		return
 	}
 	updated, err := s.settings.Update(func(c *config.Config) {
+		if payload.MonitorUserAgents != nil {
+			c.MonitorUserAgents = *payload.MonitorUserAgents
+		}
+		if payload.BotScanPaths != nil {
+			c.BotScanPaths = *payload.BotScanPaths
+		}
 		if payload.Addr != nil {
 			c.Addr = strings.TrimSpace(*payload.Addr)
 		}
@@ -265,15 +273,34 @@ func (s *Server) searchQuery(r *http.Request) (index.Query, string, error) {
 	}
 	limit := clamp(parseInt(params.Get("limit"), 100), 1, s.cfg().MaxResults)
 	offset := max(parseInt(params.Get("offset"), 0), 0)
+	hideMonitors, err := parseBoolParam(params.Get("hide_monitors"))
+	if err != nil {
+		return index.Query{}, name, errors.New("invalid hide_monitors: " + err.Error())
+	}
+	hideScans, err := parseBoolParam(params.Get("hide_scans"))
+	if err != nil {
+		return index.Query{}, name, errors.New("invalid hide_scans: " + err.Error())
+	}
 	return index.Query{
-		Text:    params.Get("q"),
-		Level:   strings.TrimSpace(params.Get("level")),
-		Service: strings.TrimSpace(params.Get("service")),
-		Since:   since,
-		Until:   until,
-		Limit:   limit,
-		Offset:  offset,
+		Text:              params.Get("q"),
+		Level:             strings.TrimSpace(params.Get("level")),
+		Service:           strings.TrimSpace(params.Get("service")),
+		Since:             since,
+		Until:             until,
+		Limit:             limit,
+		Offset:            offset,
+		HideMonitors:      hideMonitors,
+		HideScans:         hideScans,
+		MonitorUserAgents: s.cfg().MonitorUserAgents,
+		BotScanPaths:      s.cfg().BotScanPaths,
 	}, name, nil
+}
+
+func parseBoolParam(value string) (bool, error) {
+	if value == "" {
+		return false, nil
+	}
+	return strconv.ParseBool(value)
 }
 
 func (s *Server) searchOne(name string, query index.Query) ([]hit, uint64, error) {
@@ -301,6 +328,8 @@ func (s *Server) searchAll(query index.Query) ([]hit, uint64) {
 		res, err := ix.Search(index.Query{
 			Text: query.Text, Level: query.Level, Service: query.Service,
 			Since: query.Since, Until: query.Until, Limit: fetch, Offset: 0,
+			HideMonitors: query.HideMonitors, HideScans: query.HideScans,
+			MonitorUserAgents: query.MonitorUserAgents, BotScanPaths: query.BotScanPaths,
 		})
 		if err != nil {
 			s.log.Warn("search skipped project", "project", p.Name, "error", err)

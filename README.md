@@ -90,6 +90,24 @@ setting to `0` to keep everything searchable forever.
   and expand any row (click or Enter) to inspect the full entry. Auto-refresh
   updates the newest page every five seconds. Overview counts cover all searchable
   history for the selected project; the result count reflects your filters.
+  Optional **Hide monitoring probes** and **Hide common bot scans** switches are
+  saved per project in your browser (including a separate choice for All projects).
+  Manage signatures in **Server settings → Monitoring user agents / Bot scan paths**.
+  Each line is a case-insensitive whole-value wildcard pattern: `*` matches any
+  characters (including `/`), and `?` matches one character. Examples: `*my-monitor*`,
+  `/wp-login.php`, `*/.env*`. Defaults include UptimeRobot, DigitalOcean probes,
+  `.env`, `.git`, `.svn`, and `phpinfo.php`; add, remove, or replace them freely.
+  An empty list disables that category's matches. Saving applies immediately to
+  new and historical searches across all projects, without restart or reindexing.
+  Patterns are persisted as `monitor_user_agents` and `bot_scan_paths` arrays in
+  `logrift.json`, also editable through `PATCH /api/settings`. Direct file edits
+  load at startup. Log request paths and user agents for best results; nested
+  request attributes and HTTP access messages are supported. Paths are decoded
+  and query strings ignored. Filters only hide search results; stored logs,
+  downloads, and overview totals remain complete. Reset filters turns both off.
+  The first startup after this update refreshes existing uncompressed logs to
+  index request fields; large histories may take longer. Later pattern edits
+  do not need this refresh.
 - **Projects:** create projects, view descriptions and storage, open searchable or
   stored logs, and set each project's searchable history. Zero disables compression;
   older logs remain available in Stored logs. Expand project actions to replace an
@@ -103,7 +121,7 @@ setting to `0` to keep everything searchable forever.
 | Method & path | Auth | Description |
 | --- | --- | --- |
 | `POST /api/logs` | project key | Ingest one or many entries. |
-| `GET /api/search` | admin | Search. Params: `project`, `q`, `level`, `service`, `since`, `until`, `limit`, `offset`. |
+| `GET /api/search` | admin | Search. Params: `project`, `q`, `level`, `service`, `since`, `until`, `limit`, `offset`, `hide_monitors`, `hide_scans` (optional booleans, default `false`). |
 | `GET /api/stats` | admin | Totals per level for a project or `all`. |
 | `GET /api/settings` | admin | Current settings, the config file path and which settings need a restart. |
 | `PATCH /api/settings` | admin | Update settings; persisted to the config file. |

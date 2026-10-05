@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -12,7 +13,7 @@ func TestLoadCreatesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg != Defaults() {
+	if !reflect.DeepEqual(cfg, Defaults()) {
 		t.Fatalf("cfg = %+v, want %+v", cfg, Defaults())
 	}
 	if _, err := os.Stat(path); err != nil {
@@ -88,5 +89,36 @@ func TestStoreInMemory(t *testing.T) {
 	}
 	if store.Get().CompressAfterDays != 1 {
 		t.Fatalf("store = %+v", store.Get())
+	}
+}
+
+func TestSignaturePersistenceAndIsolation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "logrift.json")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patterns := []string{"*custom-monitor*"}
+	updated, err := store.Update(func(c *Config) { c.MonitorUserAgents = patterns; c.BotScanPaths = []string{} })
+	if err != nil {
+		t.Fatal(err)
+	}
+	patterns[0] = "*wrong*"
+	updated.MonitorUserAgents[0] = "*also-wrong*"
+	snapshot := store.Get()
+	snapshot.MonitorUserAgents[0] = "*snapshot-mutation*"
+	if got := store.Get().MonitorUserAgents[0]; got != "*custom-monitor*" {
+		t.Fatalf("shared signatures: %s", got)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reopened.Get(); !reflect.DeepEqual(got.MonitorUserAgents, []string{"*custom-monitor*"}) || len(got.BotScanPaths) != 0 {
+		t.Fatalf("patterns not preserved: %+v", got)
+	}
+	_, err = store.Update(func(c *Config) { c.MonitorUserAgents[0] = "*partial*"; c.MaxResults = 0 })
+	if err == nil || store.Get().MonitorUserAgents[0] != "*custom-monitor*" {
+		t.Fatal("rejected edit mutated stored patterns")
 	}
 }

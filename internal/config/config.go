@@ -7,19 +7,23 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 )
 
 // Config holds the runtime configuration for the logrift server.
 type Config struct {
-	Addr                string `json:"addr"`
-	DataDir             string `json:"data_dir"`
-	Reindex             bool   `json:"reindex"`
-	CompressAfterDays   int    `json:"compress_after_days"`
-	CompressIntervalMin int    `json:"compress_interval_min"`
-	MaxBodyKB           int    `json:"max_body_kb"`
-	MaxResults          int    `json:"max_results"`
+	Addr                string   `json:"addr"`
+	DataDir             string   `json:"data_dir"`
+	Reindex             bool     `json:"reindex"`
+	CompressAfterDays   int      `json:"compress_after_days"`
+	CompressIntervalMin int      `json:"compress_interval_min"`
+	MaxBodyKB           int      `json:"max_body_kb"`
+	MaxResults          int      `json:"max_results"`
+	MonitorUserAgents   []string `json:"monitor_user_agents"`
+	BotScanPaths        []string `json:"bot_scan_paths"`
 }
 
 // Defaults returns the configuration used when a setting is absent.
@@ -31,6 +35,8 @@ func Defaults() Config {
 		CompressIntervalMin: 60,
 		MaxBodyKB:           5120,
 		MaxResults:          1000,
+		MonitorUserAgents:   []string{"*uptimerobot*", "*digitalocean*uptime*", "*digitalocean*probe*", "*digitalocean*health*"},
+		BotScanPaths:        []string{"*/.env", "*/.env.*", "*/.env/*", "*/.git", "*/.git/*", "*/.svn", "*/.svn/*", "*/phpinfo.php", "*/phpinfo.php/*"},
 	}
 }
 
@@ -53,6 +59,9 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	cfg.normalize()
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
 }
 
@@ -94,7 +103,23 @@ func (c Config) Validate() error {
 	case c.MaxResults <= 0:
 		return errors.New("max_results must be positive")
 	}
+	for name, patterns := range map[string][]string{"monitor_user_agents": c.MonitorUserAgents, "bot_scan_paths": c.BotScanPaths} {
+		if len(patterns) > 100 {
+			return fmt.Errorf("%s allows at most 100 patterns", name)
+		}
+		for _, pattern := range patterns {
+			if strings.TrimSpace(pattern) == "" || len(pattern) > 256 {
+				return fmt.Errorf("%s patterns must contain 1–256 characters", name)
+			}
+		}
+	}
 	return nil
+}
+
+func (c Config) clone() Config {
+	c.MonitorUserAgents = slices.Clone(c.MonitorUserAgents)
+	c.BotScanPaths = slices.Clone(c.BotScanPaths)
+	return c
 }
 
 // Store is a concurrency-safe holder of the runtime configuration. Edits made
@@ -112,20 +137,20 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Store{path: path, cfg: cfg}, nil
+	return &Store{path: path, cfg: cfg.clone()}, nil
 }
 
 // NewStore returns an in-memory store that is never persisted to disk.
 func NewStore(cfg Config) *Store {
 	cfg.normalize()
-	return &Store{cfg: cfg}
+	return &Store{cfg: cfg.clone()}
 }
 
 // Get returns the current configuration.
 func (s *Store) Get() Config {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.cfg
+	return s.cfg.clone()
 }
 
 // Path returns the config file path, empty for in-memory stores.
@@ -136,7 +161,7 @@ func (s *Store) Path() string { return s.path }
 func (s *Store) Update(fn func(*Config)) (Config, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	next := s.cfg
+	next := s.cfg.clone()
 	fn(&next)
 	if err := next.Validate(); err != nil {
 		return Config{}, err
@@ -146,8 +171,8 @@ func (s *Store) Update(fn func(*Config)) (Config, error) {
 			return Config{}, err
 		}
 	}
-	s.cfg = next
-	return next, nil
+	s.cfg = next.clone()
+	return next.clone(), nil
 }
 
 // Save writes cfg to path.

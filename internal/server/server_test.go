@@ -229,6 +229,111 @@ func TestHealth(t *testing.T) {
 	}
 }
 
+func TestSearchNoiseFilters(t *testing.T) {
+	ts, mgr := newTestServer(t)
+	defer ts.Close()
+	for _, name := range []string{"web", "other"} {
+		_, key, err := mgr.Create(name, "", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res := request(t, http.MethodPost, ts.URL+"/api/logs", `[
+			{"time":"2026-10-05T10:00:00Z","msg":"customer","path":"/products"},
+			{"time":"2026-10-05T10:01:00Z","msg":"scan","path":"/.env"},
+			{"time":"2026-10-05T10:02:00Z","msg":"probe","user_agent":"UptimeRobot/2.0"},
+			{"time":"2026-10-05T10:03:00Z","msg":"customer","path":"/checkout"}
+		]`, key, false)
+		res.Body.Close()
+		if res.StatusCode != http.StatusAccepted {
+			t.Fatalf("ingest = %d", res.StatusCode)
+		}
+	}
+	for _, tc := range []struct {
+		params       string
+		total, count int
+		message      string
+	}{
+		{"project=web", 4, 4, "customer"},
+		{"project=web&hide_monitors=true", 3, 3, "customer"},
+		{"project=web&hide_scans=true", 3, 3, "customer"},
+		{"project=web&hide_monitors=true&hide_scans=true&limit=1&offset=1", 2, 1, "customer"},
+		{"project=all&hide_monitors=1&hide_scans=1&limit=2&offset=2", 4, 2, "customer"},
+		{"project=all&hide_monitors=false&hide_scans=false", 8, 8, "customer"},
+		{"project=web&hide_monitors=true&hide_scans=true&q=scan", 0, 0, ""},
+	} {
+		var result struct {
+			Total, Count int
+			Entries      []struct{ Message string }
+		}
+		decode(t, request(t, http.MethodGet, ts.URL+"/api/search?"+tc.params, "", "", true), &result)
+		if result.Total != tc.total || result.Count != tc.count {
+			t.Fatalf("%s: result = %+v", tc.params, result)
+		}
+		if len(result.Entries) > 0 && result.Entries[0].Message != tc.message {
+			t.Fatalf("%s: wrong entry %+v", tc.params, result)
+		}
+	}
+	for _, param := range []string{"hide_monitors=bad", "hide_scans=bad"} {
+		res := request(t, http.MethodGet, ts.URL+"/api/search?"+param, "", "", true)
+		res.Body.Close()
+		if res.StatusCode != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d", param, res.StatusCode)
+		}
+	}
+	var stats struct{ Total int }
+	decode(t, request(t, http.MethodGet, ts.URL+"/api/stats?project=all", "", "", true), &stats)
+	if stats.Total != 8 {
+		t.Fatalf("stored total = %d", stats.Total)
+	}
+}
+
+func TestNoiseSignaturesApplyToHistoricalLogsImmediately(t *testing.T) {
+	ts, mgr := newTestServer(t)
+	defer ts.Close()
+	_, key, err := mgr.Create("custom", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := request(t, http.MethodPost, ts.URL+"/api/logs", `[
+		{"msg":"custom probe","req":{"headers":{"User-Agent":"My-Monitor/2"},"url":"/"}},
+		{"msg":"custom scan","path":"/%77p-login.php?test=1"},
+		{"msg":"customer","path":"/products"},
+		{"msg":"default probe","user_agent":"UptimeRobot/2.0"}
+	]`, key, false)
+	res.Body.Close()
+	check := func(want int) {
+		t.Helper()
+		for _, project := range []string{"custom", "all"} {
+			var result struct{ Total, Count int }
+			decode(t, request(t, http.MethodGet, ts.URL+"/api/search?project="+project+"&hide_monitors=true&hide_scans=true&limit=1", "", "", true), &result)
+			if result.Total != want || result.Count != 1 {
+				t.Fatalf("%s: got %+v, want total %d", project, result, want)
+			}
+		}
+	}
+	check(3)
+	// Replace defaults after ingest. Nothing is rewritten or reingested.
+	res = request(t, http.MethodPatch, ts.URL+"/api/settings", `{"monitor_user_agents":["*MY-MONITOR*"],"bot_scan_paths":["/wp-login.ph?"]}`, "", true)
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("save status = %d", res.StatusCode)
+	}
+	check(2)
+	// A rejected edit must not partially apply either category.
+	res = request(t, http.MethodPatch, ts.URL+"/api/settings", `{"monitor_user_agents":[],"bot_scan_paths":[""]}`, "", true)
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid edit status = %d", res.StatusCode)
+	}
+	check(2)
+	res = request(t, http.MethodPatch, ts.URL+"/api/settings", `{"monitor_user_agents":[],"bot_scan_paths":[]}`, "", true)
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("clear status = %d", res.StatusCode)
+	}
+	check(4)
+}
+
 func TestSettingsEndpoints(t *testing.T) {
 	ts, _ := newTestServer(t)
 	defer ts.Close()

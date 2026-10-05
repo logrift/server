@@ -1,11 +1,69 @@
 package index
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/blevesearch/bleve/v2"
+	"github.com/blevesearch/bleve/v2/mapping"
+
 	"logrift.dev/server/internal/entry"
 )
+
+func TestLegacyIndexRefreshesNoiseClassification(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index")
+	m, err := buildMapping()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the old mapping and a previously indexed probe.
+	delete(m.(*mapping.IndexMappingImpl).TypeMapping["_default"].Properties, "request_agent")
+	delete(m.(*mapping.IndexMappingImpl).TypeMapping["_default"].Properties, "request_path")
+	legacy, err := bleve.New(path, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := entry.Entry{Time: time.Now().UTC(), Level: "info", Message: "request", Attrs: map[string]any{"user_agent": "UptimeRobot/2.0"}}
+	raw, err := e.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := document(e, raw)
+	delete(doc, "request_agent")
+	delete(doc, "request_path")
+	if err := legacy.Index("old", doc); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(metaPath(path), []byte(`{"version":1,"offsets":{"logs.jsonl":42}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ix, created, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ix.Close()
+	if created || len(ix.Offsets()) != 0 {
+		t.Fatalf("legacy index did not request catch-up: created=%v offsets=%v", created, ix.Offsets())
+	}
+	// CatchUp rewrites the same stable ID under the existing dynamic mapping.
+	add(t, ix, "old", e)
+	res, err := ix.Search(Query{HideMonitors: true, MonitorUserAgents: []string{"*uptimerobot*"}, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Total != 0 {
+		t.Fatalf("legacy monitor remained visible: %+v", res)
+	}
+	count, err := ix.DocCount()
+	if err != nil || count != 1 {
+		t.Fatalf("refresh duplicated entries: count=%d err=%v", count, err)
+	}
+}
 
 func add(t *testing.T, ix *Index, id string, e entry.Entry) {
 	t.Helper()

@@ -200,6 +200,11 @@ func (m *Manager) Usage(name string) (Usage, error) {
 	var u Usage
 	err := filepath.WalkDir(m.projectDir(name), func(path string, d os.DirEntry, err error) error {
 		if err != nil {
+			// A file can vanish between ReadDir and lstat when the index
+			// atomically replaces its meta file or a day file is compressed.
+			if os.IsNotExist(err) {
+				return nil
+			}
 			return err
 		}
 		if d.IsDir() {
@@ -207,6 +212,9 @@ func (m *Manager) Usage(name string) (Usage, error) {
 		}
 		info, err := d.Info()
 		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
 			return err
 		}
 		if strings.HasPrefix(d.Name(), "logs-") {

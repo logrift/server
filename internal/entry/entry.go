@@ -169,19 +169,39 @@ func levelFromString(s string) string {
 }
 
 // parseTime accepts RFC3339 strings and Unix timestamps in seconds,
-// milliseconds, microseconds or nanoseconds.
+// milliseconds, microseconds or nanoseconds. A value that resolves outside the
+// range encoding/json can represent is treated as absent so the caller keeps
+// its default instead of failing to marshal later.
 func parseTime(v any) (time.Time, bool) {
+	var t time.Time
 	switch value := v.(type) {
 	case string:
-		return parseTimeString(value)
-	case json.Number:
-		if n, err := value.Float64(); err == nil {
-			return parseTimeNumber(n), true
+		parsed, ok := parseTimeString(value)
+		if !ok {
+			return time.Time{}, false
 		}
+		t = parsed
+	case json.Number:
+		n, err := value.Float64()
+		if err != nil {
+			return time.Time{}, false
+		}
+		t = parseTimeNumber(n)
 	case float64:
-		return parseTimeNumber(value), true
+		t = parseTimeNumber(value)
+	default:
+		return time.Time{}, false
 	}
-	return time.Time{}, false
+	if !jsonTimeRange(t) {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+// jsonTimeRange reports whether t has a year the JSON time encoding accepts;
+// encoding/json rejects years outside [0, 9999].
+func jsonTimeRange(t time.Time) bool {
+	return t.Year() >= 0 && t.Year() <= 9999
 }
 
 func parseTimeString(s string) (time.Time, bool) {

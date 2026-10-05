@@ -514,6 +514,11 @@ func (s *Store) dayFiles() ([]DayFile, error) {
 		}
 		info, err := de.Info()
 		if err != nil {
+			// A day file can be renamed or removed between ReadDir and stat
+			// while the compression pass is running; skip it this time.
+			if os.IsNotExist(err) {
+				continue
+			}
 			return nil, fmt.Errorf("stat %s: %w", name, err)
 		}
 		out = append(out, DayFile{Date: date, Name: name, Bytes: info.Size(), Compressed: compressed})

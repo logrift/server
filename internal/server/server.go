@@ -75,11 +75,78 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /readyz", s.handleReady)
 	mux.HandleFunc("GET /{$}", s.handleIndex)
-	return mux
+	return s.loggingMiddleware(mux)
+}
+
+// responseWriter wraps http.ResponseWriter to capture the status code.
+type responseWriter struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	rw.status = code
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+func (rw *responseWriter) Write(b []byte) (int, error) {
+	n, err := rw.ResponseWriter.Write(b)
+	rw.bytes += n
+	return n, err
+}
+
+// loggingMiddleware records an access log entry for every request except
+// health-check probes. Logs are written directly to the access log project's
+// collector so they appear in the dashboard.
+func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
+	projectName := s.cfg().AccessLogProject
+	if projectName == "" {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rw, r)
+
+		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
+			return
+		}
+		collector, ok := s.manager.Collector(projectName)
+		if !ok {
+			return
+		}
+		duration := time.Since(start)
+		level := "info"
+		if rw.status >= 500 {
+			level = "error"
+		} else if rw.status >= 400 {
+			level = "warn"
+		}
+		msg := fmt.Sprintf("%s %s %d %s", r.Method, r.URL.Path, rw.status, duration.Round(time.Millisecond))
+		e := entry.Entry{
+			Time:    start.UTC(),
+			Level:   level,
+			Service: projectName,
+			Message: msg,
+			Attrs: map[string]any{
+				"method":      r.Method,
+				"path":        r.URL.Path,
+				"status":      rw.status,
+				"duration_ms": duration.Milliseconds(),
+				"bytes":       rw.bytes,
+				"remote_addr": r.RemoteAddr,
+				"user_agent":  r.UserAgent(),
+			},
+		}
+		if err := collector.Write([]entry.Entry{e}); err != nil {
+			s.log.Warn("access log write failed", "error", err)
+		}
+	})
 }
 
 // restartRequired lists the settings that only take effect after a restart.
-var restartRequired = []string{"addr", "data_dir", "reindex"}
+var restartRequired = []string{"addr", "data_dir", "reindex", "access_log_project"}
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
@@ -109,6 +176,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		CompressIntervalMin *int      `json:"compress_interval_min"`
 		MaxBodyKB           *int      `json:"max_body_kb"`
 		MaxResults          *int      `json:"max_results"`
+		AccessLogProject    *string   `json:"access_log_project"`
 		MonitorUserAgents   *[]string `json:"monitor_user_agents"`
 		BotScanPaths        *[]string `json:"bot_scan_paths"`
 	}
@@ -143,6 +211,9 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if payload.MaxResults != nil {
 			c.MaxResults = *payload.MaxResults
+		}
+		if payload.AccessLogProject != nil {
+			c.AccessLogProject = strings.TrimSpace(*payload.AccessLogProject)
 		}
 	})
 	if err != nil {

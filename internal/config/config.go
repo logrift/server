@@ -22,6 +22,7 @@ type Config struct {
 	CompressIntervalMin int      `json:"compress_interval_min"`
 	MaxBodyKB           int      `json:"max_body_kb"`
 	MaxResults          int      `json:"max_results"`
+	AccessLogProject    string   `json:"access_log_project"`
 	MonitorUserAgents   []string `json:"monitor_user_agents"`
 	BotScanPaths        []string `json:"bot_scan_paths"`
 }
@@ -35,6 +36,7 @@ func Defaults() Config {
 		CompressIntervalMin: 60,
 		MaxBodyKB:           5120,
 		MaxResults:          1000,
+		AccessLogProject:    "logrift",
 		MonitorUserAgents:   []string{"*uptimerobot*", "*digitalocean*uptime*", "*digitalocean*probe*", "*digitalocean*health*"},
 		BotScanPaths:        []string{"*/.env", "*/.env.*", "*/.env/*", "*/.git", "*/.git/*", "*/.svn", "*/.svn/*", "*/phpinfo.php", "*/phpinfo.php/*"},
 	}
@@ -44,8 +46,9 @@ func Defaults() Config {
 // directory set the listen address and data directory without editing the
 // config file. They take precedence over the file and are not persisted.
 const (
-	envAddr    = "LOGRIFT_ADDR"
-	envDataDir = "LOGRIFT_DATA_DIR"
+	envAddr             = "LOGRIFT_ADDR"
+	envDataDir          = "LOGRIFT_DATA_DIR"
+	envAccessLogProject = "LOGRIFT_ACCESS_LOG_PROJECT"
 )
 
 // Load reads the config file at path. A missing file is written with defaults
@@ -79,6 +82,9 @@ func applyEnv(c *Config) {
 	}
 	if v := strings.TrimSpace(os.Getenv(envDataDir)); v != "" {
 		c.DataDir = v
+	}
+	if v, ok := os.LookupEnv(envAccessLogProject); ok {
+		c.AccessLogProject = strings.TrimSpace(v)
 	}
 }
 

@@ -553,3 +553,94 @@ func TestArchiveValidatesDates(t *testing.T) {
 		t.Fatalf("missing project status = %d, want 404", res.StatusCode)
 	}
 }
+
+func TestAccessLogMiddleware(t *testing.T) {
+	mgr, err := manager.Open(t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = mgr.Close() })
+
+	// Create the access log project manually (normally done at startup).
+	if _, _, err := mgr.Create("logrift", "", 0); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Defaults()
+	cfg.AccessLogProject = "logrift"
+	srv := New(mgr, Options{AdminKey: adminKey, Settings: config.NewStore(cfg)}, nil)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	// Make a request that will be logged.
+	res := request(t, http.MethodGet, ts.URL+"/api/stats", "", "", true)
+	res.Body.Close()
+
+	// Search the access log project for the entry.
+	ix, ok := mgr.Index("logrift")
+	if !ok {
+		t.Fatal("access log index not found")
+	}
+	total, err := ix.DocCount()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total < 1 {
+		t.Fatalf("access log entries = %d, want >= 1", total)
+	}
+}
+
+func TestAccessLogMiddlewareExcludesHealthProbes(t *testing.T) {
+	mgr, err := manager.Open(t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = mgr.Close() })
+
+	if _, _, err := mgr.Create("logrift", "", 0); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Defaults()
+	cfg.AccessLogProject = "logrift"
+	srv := New(mgr, Options{AdminKey: adminKey, Settings: config.NewStore(cfg)}, nil)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	// Hit health and ready endpoints.
+	request(t, http.MethodGet, ts.URL+"/healthz", "", "", false).Body.Close()
+	request(t, http.MethodGet, ts.URL+"/readyz", "", "", false).Body.Close()
+
+	ix, ok := mgr.Index("logrift")
+	if !ok {
+		t.Fatal("access log index not found")
+	}
+	count, err := ix.DocCount()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("health probes logged %d entries, want 0", count)
+	}
+}
+
+func TestAccessLogMiddlewareDisabledWhenEmpty(t *testing.T) {
+	mgr, err := manager.Open(t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = mgr.Close() })
+
+	cfg := config.Defaults()
+	cfg.AccessLogProject = ""
+	srv := New(mgr, Options{AdminKey: adminKey, Settings: config.NewStore(cfg)}, nil)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	// Make a request — should not panic or create a project.
+	request(t, http.MethodGet, ts.URL+"/api/stats", "", "", true).Body.Close()
+
+	if _, ok := mgr.Get("logrift"); ok {
+		t.Fatal("logrift project should not exist when access log is disabled")
+	}
+}

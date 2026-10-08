@@ -47,6 +47,16 @@ func main() {
 	}
 	defer mgr.Close()
 
+	if cfg.AccessLogProject != "" {
+		if _, ok := mgr.Get(cfg.AccessLogProject); !ok {
+			if _, _, err := mgr.Create(cfg.AccessLogProject, "logrift access logs", 0); err != nil {
+				logger.Error("unable to create access log project", "project", cfg.AccessLogProject, "error", err)
+				os.Exit(1)
+			}
+			logger.Info("created access log project", "project", cfg.AccessLogProject)
+		}
+	}
+
 	if deleted, err := mgr.Compress(); err != nil {
 		logger.Warn("startup compression failed", "error", err)
 	} else if deleted > 0 {
